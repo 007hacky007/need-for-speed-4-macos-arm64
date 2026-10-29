@@ -4,6 +4,8 @@ Build a native ARM64 macOS app for **Need for Speed: High Stakes / Road Challeng
 
 **This repository contains no EA game code, executables, music, movies, cars, tracks or other game assets. You must supply your own game copy.** The build downloads required patches and build dependencies from their original sources, verifies their SHA-256 checksums, and prepares the game locally. Game files, downloaded payloads, translated code and the resulting app are excluded from version control.
 
+![NFS IV macOS launcher](docs/images/launcher.png)
+
 ## Build and play
 
 You need an Apple Silicon Mac, native ARM64 **Python 3.11 or newer** with pip/venv, Xcode Command Line Tools, and an internet connection for the first build. Install the Apple tools with `xcode-select --install` if needed. Run the following commands in this repository's directory:
