@@ -1,0 +1,31 @@
+# User-supplied games, patch payloads and all game-derived build output.
+/NFS.*
+/official_patches/
+/unofficial_patches/
+/local/
+/gen/
+/out/
+/.venv/
+/.cache/
+__pycache__/
+*.pyc
+.DS_Store
+*.iso
+*.bin
+*.img
+*.mdf
+*.mds
+*.ccd
+*.cue
+*.sub
+*.exe
+*.dll
+*.icd
+*.asi
+*.7z
+*.zip
+*.rar
+*.app/
+# Original game icons and their build-time macOS conversions.
+*.[iI][cC][oO]
+*.[iI][cC][nN][sS]

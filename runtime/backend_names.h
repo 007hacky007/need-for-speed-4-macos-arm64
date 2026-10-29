@@ -1,0 +1,16 @@
+/* Compile the same renderer contract with a private backend prefix. */
+#define JOIN_INNER(a,b) a##b
+#define JOIN(a,b) JOIN_INNER(a,b)
+#define render_init JOIN(BACKEND,init)
+#define render_mode JOIN(BACKEND,mode)
+#define render_clear JOIN(BACKEND,clear)
+#define render_draw JOIN(BACKEND,draw)
+#define render_texture JOIN(BACKEND,texture)
+#define render_texture_free JOIN(BACKEND,texture_free)
+#define render_flush JOIN(BACKEND,flush)
+#define render_present JOIN(BACKEND,present)
+#define render_capture_frame JOIN(BACKEND,capture_frame)
+#define render_capture_wait JOIN(BACKEND,capture_wait)
+#define render_request_capture JOIN(BACKEND,request_capture)
+#define render_read JOIN(BACKEND,read)
+#define render_write JOIN(BACKEND,write)

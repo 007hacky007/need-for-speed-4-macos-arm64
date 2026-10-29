@@ -1,0 +1,52 @@
+{
+  "source": "NFSU2Recomp local reference",
+  "revision": "b881f3044777184d7a4adc7311f72e6bcbc83f1c",
+  "files": [
+    {
+      "path": "tools/lift.py",
+      "sha256": "a9d5ea0b4b5f1af69d24239a856556380e8708f652ee7fdab276ff697f4ef21e"
+    },
+    {
+      "path": "tools/lregs.py",
+      "sha256": "6e5abaf47491630215570c1a83dd2ea03dcd07a3176bdaf4f04c3bf632a30dd2"
+    },
+    {
+      "path": "tools/genall.py",
+      "sha256": "db99c4cfc762652994964a7e8a27b640d659ef3ab88aa853bbc3cd8d95fb3438"
+    },
+    {
+      "path": "tools/isatest.py",
+      "sha256": "a1014207df5c604c6ad1dbd9fe0e3f754078ff5aef45da1741ebcfb5704c4d2e"
+    },
+    {
+      "path": "runtime/cpu.h",
+      "sha256": "093f0e6e599d73e94706a8f050a7505c1477b210fa6c2ee00892dc4148b4776c"
+    },
+    {
+      "path": "runtime/heap.c",
+      "sha256": "bcac4fc847a4e531ff4ed1a371b6ecea79b56f7771df5093e527eb88e72057b5"
+    },
+    {
+      "path": "runtime/fileio.c",
+      "sha256": "a271576791f3e98c30225823821c25b5ef41f5fa958b6868c83ab99408c8d394"
+    },
+    {
+      "path": "runtime/win32_ext.c",
+      "sha256": "39d73e0d8a627beb2b67a75a518f20823af05d7bcdcdff68635922992a8d16f5"
+    },
+    {
+      "path": "runtime/res.c",
+      "sha256": "36bb128fcc599e68edad81bb898be64019b561013e579ea450b3c26185130b57"
+    },
+    {
+      "path": "tools/win32_args.json",
+      "derived_from": "tools/argcount.py KNOWN table",
+      "sha256_of_source": "5a0fb660941789534e6e78a18fb3deb79ad0dd613adc9c63095cea6321afd645"
+    },
+    {
+      "path": "runtime/locale.c",
+      "derived_from": "runtime/win32.c character/locale API branches",
+      "sha256_of_source": "31f0f72a2c547540ea2607d6fca6fac7d22681a8317c90ddc7fc90abcdbb881b"
+    }
+  ]
+}
