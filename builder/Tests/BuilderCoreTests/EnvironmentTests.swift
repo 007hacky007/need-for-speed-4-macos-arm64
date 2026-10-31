@@ -263,9 +263,9 @@ final class EnvironmentTests: XCTestCase {
     }
 
     func testBuildToolsStateMessages() {
-        XCTAssertEqual(buildToolsState(pythonInstalled: false, tools: nil), .blocked("about 90 MB download"))
+        XCTAssertEqual(buildToolsState(pythonInstalled: false, tools: nil), .blocked("about 70 MB download"))
         XCTAssertEqual(buildToolsState(pythonInstalled: false, tools: .tools(python: "/c/bin/python")),
-                       .blocked("about 90 MB download"))
+                       .blocked("about 70 MB download"))
         XCTAssertEqual(buildToolsState(pythonInstalled: true, tools: .tools(python: "/c/bin/python")), .ready("Installed"))
         let packages = CheckState.blocked("Packages need to be set up again (small download)")
         XCTAssertEqual(buildToolsState(pythonInstalled: true, tools: .tools(python: nil)), packages)

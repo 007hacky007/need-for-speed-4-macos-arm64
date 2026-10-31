@@ -37,9 +37,11 @@ public func macCheck(isAppleSilicon: Bool, version: OperatingSystemVersion) -> C
     return .ready("Apple Silicon, macOS \(version.majorVersion).\(version.minorVersion)")
 }
 
-/// Free space the build needs on the workspace and cache volume: the measured peak plus a margin.
+/// Free space the build needs on the workspace and cache volume: the measured peak of a first
+/// build (support folder, cache and installed app: 2.5 GB, or 3.6 GB with community content)
+/// plus about 25 percent.
 public func requiredFreeBytes(community: Bool) -> Int64 {
-    community ? 8_000_000_000 : 4_000_000_000
+    community ? 4_500_000_000 : 3_500_000_000
 }
 
 /// The text behind Copy details on a rejected game copy: the plain message, then the non-empty

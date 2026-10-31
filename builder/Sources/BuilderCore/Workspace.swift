@@ -113,7 +113,7 @@ public func removeOldWorkspaces(_ paths: BuilderPaths, keeping version: String) 
 /// The Build tools row. The package environment lives in the shared cache, so its state comes
 /// from `builder_cli.py tools status` (`tools`), which needs the private Python to run at all.
 public func buildToolsState(pythonInstalled: Bool, tools: PipelineEvent?) -> CheckState {
-    guard pythonInstalled else { return .blocked("about 90 MB download") }
+    guard pythonInstalled else { return .blocked("about 70 MB download") }
     if case .tools(python: _?)? = tools { return .ready("Installed") }
     return .blocked("Packages need to be set up again (small download)")
 }

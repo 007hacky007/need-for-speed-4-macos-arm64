@@ -17,7 +17,7 @@ struct ChecklistView: View {
             Toggle(isOn: Binding(get: { model.community }, set: model.setCommunity)) {
                 (Text("Include community cars and tracks").fontWeight(.semibold)
                     + Text(" - 70 cars, 30 replacement tracks and pursuit traffic from the High Stakes Expansion Pack "
-                        + "(extra 170 MB download, about 4 GB more disk). Your saves are kept either way."))
+                        + "(extra 170 MB download, about 1 GB more disk). Your saves are kept either way."))
                     .fixedSize(horizontal: false, vertical: true)
             }
             .toggleStyle(.checkbox)

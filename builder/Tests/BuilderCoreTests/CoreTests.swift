@@ -96,7 +96,8 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(progressFraction(atStart: "extract", community: false), 0)
         // The community step comes before compiling, so compiling starts later in the bar.
         XCTAssertGreaterThan(progressFraction(atStart: "compile", community: true), progressFraction(atStart: "compile", community: false))
-        XCTAssertEqual(progressFraction(atStart: "package", community: true), 1 - 5.0 / 110, accuracy: 0.0001)
+        XCTAssertEqual(progressFraction(atStart: "compile", community: false), 0.21, accuracy: 0.0001)
+        XCTAssertEqual(progressFraction(atStart: "package", community: true), 1 - 4.0 / 105, accuracy: 0.0001)
         XCTAssertGreaterThan(progressFraction(atStart: "package", community: false), 0.8)
         XCTAssertEqual(progressFraction(atStart: "unknown", community: false), 1)
         if case .blocked = diskSpaceCheck(available: requiredFreeBytes(community: true) - 1, community: true) {} else { XCTFail() }

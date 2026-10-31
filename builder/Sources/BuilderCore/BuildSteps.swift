@@ -1,8 +1,11 @@
 import Foundation
 
+// From the end-to-end builds (first build on a new cache): extract 1 s, verify 0.4 s, setup
+// about 9 s when the packages are not installed yet, dependencies 18 s (glslang is compiled),
+// prepare 1 s, community 9 s, translate 9-14 s, compile 100-210 s, package 3-7 s.
 private let allSteps: [(id: String, weight: Double)] = [
-    ("extract", 4), ("verify", 4), ("setup", 2), ("dependencies", 6), ("prepare", 4),
-    ("community", 10), ("translate", 35), ("compile", 40), ("package", 5),
+    ("extract", 1), ("verify", 1), ("setup", 1), ("dependencies", 10), ("prepare", 1),
+    ("community", 5), ("translate", 7), ("compile", 75), ("package", 4),
 ]
 
 /// The pipeline steps in order with their share of the work; `community` only with the option.
