@@ -1,12 +1,23 @@
 import argparse
+import contextlib
+import io
+import json
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from tools import build_app
+
+PREFIX = 'NFSIV-EVENT '
+
+
+def events(stdout):
+    return [json.loads(line[len(PREFIX):]) for line in stdout.splitlines() if line.startswith(PREFIX)]
 
 
 class BuildAppTests(unittest.TestCase):
@@ -88,6 +99,224 @@ class BuildAppTests(unittest.TestCase):
             addons.assert_called_once_with(options.cache, root / '7zz')
             self.assertEqual(package.call_args.kwargs['addons'], root / 'addon library')
             self.assertEqual(package.call_args.kwargs['moltenvk'], root / 'MoltenVK')
+
+
+class ProgressTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='build events ')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    @contextlib.contextmanager
+    def mocked_pipeline(self, package=None):
+        """The mocks of the full build test, plus an image source so 'extract' runs."""
+        dependencies = (self.root / '7zz', self.root / 'veg.7z', self.root / 'MoltenVK', self.root / 'glslang')
+        output = self.root / 'out/NFSIV.app'
+
+        def addons(cache, extractor):
+            return Path(tempfile.mkdtemp(prefix='addons-', dir=cache))
+
+        with patch.object(build_app, 'ROOT', self.root), \
+                patch.object(build_app, 'check_toolchain'), \
+                patch.object(build_app, 'extract_source'), \
+                patch.object(build_app, 'bootstrap', return_value=self.root / 'python'), \
+                patch.object(build_app, 'dependencies', return_value=dependencies), \
+                patch.object(build_app, 'verify_source', return_value={'sha256': 'verified'}), \
+                patch.object(build_app, 'prepare_game', return_value={'sha256': 'verified'}), \
+                patch.object(build_app.subprocess, 'run'), \
+                patch.object(build_app, 'package_app', side_effect=package, return_value=output), \
+                patch.object(build_app, 'prepare_addons', side_effect=addons):
+            yield output
+
+    def main(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = build_app.main(list(argv))
+        return code, events(out.getvalue())
+
+    def game(self):
+        image = self.root / 'input folder/-game "copy".iso'
+        image.parent.mkdir(exist_ok=True)
+        image.write_bytes(b'image')
+        return image
+
+    def test_progress_mode_reports_missing_game_as_event(self):
+        run = subprocess.run([sys.executable, '-B', str(build_app.ROOT / 'tools/build_app.py'), '--progress',
+                              '--cache', str(self.root / 'cache'), '--', '/nonexistent/game.iso'],
+                             text=True, capture_output=True)
+        self.assertEqual(run.returncode, 1)
+        self.assertIn('error', events(run.stdout)[-1])
+
+    def test_argument_errors_are_events_in_progress_mode(self):
+        code, found = self.main('--progress', '--no-such-option')
+        self.assertEqual(code, 2)
+        self.assertIn('error', found[-1])
+
+    def test_step_ids_in_order_with_and_without_community(self):
+        expected = ['extract', 'verify', 'setup', 'dependencies', 'prepare', 'translate', 'compile', 'package']
+        for community in (False, True):
+            with self.subTest(community=community), self.mocked_pipeline() as output:
+                flags = ['--community'] if community else []
+                code, found = self.main('--progress', '--cache', str(self.root / 'cache'), *flags,
+                                        '--', str(self.game()))
+                self.assertEqual(code, 0)
+                steps = [e['step'] for e in found if 'step' in e]
+                want = expected[:5] + ['community'] + expected[5:] if community else expected
+                self.assertEqual(steps, want)
+                self.assertTrue(all(e.get('title') for e in found if 'step' in e))
+                self.assertEqual(found[-1], {'done': str(output)})
+
+    def test_folder_source_has_no_extract_step(self):
+        folder = self.root / 'game folder'
+        folder.mkdir()
+        with self.mocked_pipeline():
+            code, found = self.main('--progress', '--cache', str(self.root / 'cache'), '--', str(folder))
+        self.assertEqual(code, 0)
+        self.assertEqual([e['step'] for e in found if 'step' in e][0], 'verify')
+
+    def test_setup_only_never_runs_xcrun(self):
+        calls = []
+        real_which = shutil.which
+
+        def which(name, *args, **kwargs):
+            calls.append(name)
+            return real_which(name, *args, **kwargs)
+
+        def record(*args, **kwargs):
+            calls.append(' '.join(map(str, args[0])))
+            raise AssertionError('no subprocess expected')
+
+        python = self.root / 'venv/bin/python'
+        with patch.object(build_app, 'bootstrap', return_value=python) as bootstrap, \
+                patch.object(build_app.shutil, 'which', which), \
+                patch.object(build_app.subprocess, 'check_output', record), \
+                patch.object(build_app.subprocess, 'run', record):
+            code, found = self.main('--setup-only', '--progress', '--cache', str(self.root / 'cache'))
+        self.assertEqual(code, 0)
+        bootstrap.assert_called_once_with(self.root / 'cache')
+        self.assertFalse(any('xcrun' in call for call in calls), calls)
+        self.assertEqual(found[-1], {'tools': str(python)})
+
+    def test_environment_name_includes_interpreter(self):
+        cache = self.root / 'cache'
+
+        def venv(command, **kwargs):
+            if command[1:3] == ['-m', 'venv']:
+                Path(command[3]).mkdir(parents=True)
+
+        with patch.object(build_app.subprocess, 'run', side_effect=venv) as run:
+            first = build_app.bootstrap(cache)
+        environment = first.parent.parent
+        self.assertRegex(environment.name, r'^python-\d+\.\d+-[0-9a-f]{12}-[0-9a-f]{8}$')
+        self.assertEqual(environment, build_app.environment_path(cache))
+        self.assertEqual(run.call_args_list[0].args[0][:3], [sys.executable, '-m', 'venv'])
+        with patch.object(build_app.sys, 'base_prefix', str(self.root / 'another python')):
+            other = build_app.environment_path(cache)
+        self.assertNotEqual(other, environment)
+        self.assertEqual(other.name.rsplit('-', 1)[0], environment.name.rsplit('-', 1)[0])
+
+    def test_discard_intermediates_removes_only_this_runs_trees(self):
+        cache = self.root / 'cache'
+        old_game = self.root / 'local/build-game/game-old'
+        old_addons = cache / 'addons-old'
+
+        def trees():
+            return (sorted(p.name for p in (self.root / 'local/build-game').iterdir()),
+                    sorted(p.name for p in cache.iterdir() if p.name.startswith('addons-')))
+
+        def broken(*args, **kwargs):
+            raise ValueError('packaging failed')
+
+        for package in (None, broken):
+            with self.subTest(failing=package is not None), self.mocked_pipeline(package):
+                for folder in (old_game, old_addons):
+                    folder.mkdir(parents=True, exist_ok=True)
+                    (folder / 'keep').write_text('x')
+                code, _ = self.main('--progress', '--cache', str(cache), '--discard-intermediates',
+                                    '--community', '--', str(self.game()))
+                self.assertEqual(code, 1 if package else 0)
+                self.assertEqual(trees(), (['game-old'], ['addons-old']))
+                self.assertEqual((old_game / 'keep').read_text(), 'x')
+
+    def test_intermediates_are_kept_by_default(self):
+        cache = self.root / 'cache'
+        with self.mocked_pipeline():
+            code, _ = self.main('--progress', '--cache', str(cache), '--community', '--', str(self.game()))
+        self.assertEqual(code, 0)
+        self.assertEqual(len(list((self.root / 'local/build-game').glob('game-*'))), 1)
+        self.assertEqual(len(list(cache.glob('addons-*'))), 1)
+
+    def test_failed_subprocess_is_a_plain_error_event(self):
+        with self.mocked_pipeline():
+            with patch.object(build_app.subprocess, 'run',
+                              side_effect=subprocess.CalledProcessError(2, ['python', 'tools/prepare.py'])):
+                code, found = self.main('--progress', '--cache', str(self.root / 'cache'), '--', str(self.game()))
+        self.assertEqual(code, 1)
+        self.assertEqual(found[-1], {'error': build_app.STEP_FAILED})
+        self.assertEqual(build_app.STEP_FAILED,
+                         'This step stopped with an error. Click Copy log and include it in a bug report.')
+
+    def test_failed_download_names_the_site(self):
+        error = build_app.DownloadFailed('nfs4_modern_patch.7z', 'https://veg.by/files/nfs4/nfs4_modern_patch.7z',
+                                         OSError('offline'))
+        with self.mocked_pipeline():
+            with patch.object(build_app, 'dependencies', side_effect=error):
+                code, found = self.main('--progress', '--cache', str(self.root / 'cache'), '--', str(self.game()))
+        self.assertEqual(code, 1)
+        self.assertEqual(found[-1], {'error': 'The VEG Modern Patch download from veg.by failed. '
+                                              'Check your internet connection and try again.'})
+        community = build_app.DownloadFailed('hsfull.rar', 'https://www.iplounge.net/dloads/hsfull.rar', OSError())
+        self.assertEqual(build_app.download_message(community, progress=True),
+                         'The High Stakes Expansion Pack download from iplounge.net failed. Check your internet '
+                         'connection and try again, or untick Include community cars and tracks.')
+
+    def test_unexpected_exception_is_an_event_with_its_type(self):
+        with self.mocked_pipeline():
+            with patch.object(build_app, 'verify_source', side_effect=KeyError('x')):
+                code, found = self.main('--progress', '--cache', str(self.root / 'cache'), '--', str(self.game()))
+        self.assertEqual(code, 1)
+        self.assertEqual(found[-1], {'error': 'Unexpected error (KeyError). '
+                                              'Click Copy log and include it in a bug report.'})
+
+    def test_xcode_licence_failure_is_plain(self):
+        failure = subprocess.CompletedProcess(['xcrun'], 69, '', 'You have not agreed to the Xcode license agreements.')
+        with patch.object(build_app.shutil, 'which', return_value='/usr/bin/xcrun'), \
+                patch.object(build_app.subprocess, 'run', return_value=failure):
+            with self.assertRaisesRegex(ValueError, 'Open Xcode once to accept its licence'):
+                build_app.check_toolchain()
+
+    def test_sigterm_unwinds_temporary_directories(self):
+        cache = self.root / 'cache'
+        game = self.game()
+        script = (
+            'import sys, time\n'
+            'from pathlib import Path\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'from tools import build_app\n'
+            'build_app.ROOT = Path(sys.argv[2])\n'
+            'build_app.check_toolchain = lambda: None\n'
+            'def slow(source, destination):\n'
+            '    destination.mkdir(parents=True)\n'
+            '    (destination / "partial").write_text("x")\n'
+            '    print("slow", flush=True)\n'
+            '    time.sleep(60)\n'
+            'build_app.extract_source = slow\n'
+            'sys.exit(build_app.main(sys.argv[3:]))\n')
+        process = subprocess.Popen([sys.executable, '-B', '-c', script, str(build_app.ROOT), str(self.root),
+                                    '--progress', '--cache', str(cache), '--', str(game)],
+                                   stdout=subprocess.PIPE, text=True)
+        try:
+            for line in process.stdout:
+                if line.strip() == 'slow':
+                    break
+            self.assertTrue(list(cache.glob('.build-*')))
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=5), 143)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.stdout.close()
+        self.assertEqual(list(cache.glob('.build-*')), [])
 
 
 if __name__ == '__main__':

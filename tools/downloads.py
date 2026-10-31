@@ -15,6 +15,14 @@ MAX_DOWNLOAD = 1024 * 1024 * 1024
 MAX_EXTRACT = 2 * MAX_DOWNLOAD
 
 
+class DownloadFailed(RuntimeError):
+    """A network failure, with the file name and URL so callers can name the site."""
+
+    def __init__(self, name, url, error):
+        super().__init__(f'download failed for {name}: {error}')
+        self.name, self.url = name, url
+
+
 def digest(path):
     with Path(path).open('rb') as source:
         return hashlib.file_digest(source, 'sha256').hexdigest()
@@ -58,7 +66,7 @@ def fetch(cache: Path, name: str, url: str, sha256: str) -> Path:
         os.replace(temporary, target)
         return target
     except (urllib.error.URLError, TimeoutError, OSError) as error:
-        raise RuntimeError(f'download failed for {name}: {error}') from error
+        raise DownloadFailed(name, url, error) from error
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
