@@ -16,11 +16,11 @@ from urllib.parse import urlparse
 
 try:
     from .downloads import DownloadFailed, digest, extract_tar, fetch
-    from .game_source import extract_source, prepare_game, verify_source
+    from .game_source import SourceRejected, describe_rejection, extract_source, prepare_game, verify_source
     from .package import package_app
 except ImportError:
     from downloads import DownloadFailed, digest, extract_tar, fetch
-    from game_source import extract_source, prepare_game, verify_source
+    from game_source import SourceRejected, describe_rejection, extract_source, prepare_game, verify_source
     from package import package_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,7 +196,9 @@ def build(args):
     if args.output.suffix != '.app':
         raise ValueError('output must be an .app bundle path')
     if source.is_symlink():
-        raise ValueError('source symlink is unsupported')
+        raise SourceRejected('link')
+    if not source.exists():
+        raise SourceRejected('missing')
     cache.mkdir(parents=True, exist_ok=True)
     if cache.resolve().is_relative_to(ROOT.resolve()):
         # Custom caches can live beside source; hide only generated cache entries.
@@ -271,8 +273,17 @@ class Parser(argparse.ArgumentParser):
         super().error(message)
 
 
-def failure_message(error, setup_only=False):
+def failure_event(error, setup_only=False):
     """The one plain sentence NFSIV Builder shows; the details are in the log above it."""
+    if isinstance(error, SourceRejected):
+        event = {'error': str(error), 'reason': error.reason}
+        if error.detected:
+            event['detected'] = error.detected
+        return event
+    return {'error': failure_message(error, setup_only)}
+
+
+def failure_message(error, setup_only=False):
     if isinstance(error, DownloadFailed):
         return download_message(error, progress=True)
     if isinstance(error, subprocess.CalledProcessError):
@@ -321,9 +332,10 @@ def main(argv=None):
         known = isinstance(error, (ValueError, RuntimeError, OSError, subprocess.SubprocessError))
         if not known:
             traceback.print_exc()
-        print(f'Build failed: {error}' if known else 'Build failed.', file=sys.stderr, flush=True)
+        detail = describe_rejection(error) if isinstance(error, SourceRejected) else error
+        print(f'Build failed: {detail}' if known else 'Build failed.', file=sys.stderr, flush=True)
         if PROGRESS:
-            emit({'error': failure_message(error, args.setup_only)})
+            emit(failure_event(error, args.setup_only))
         return 1
     if PROGRESS and not args.prepare_only:
         emit({'done': str(result)})

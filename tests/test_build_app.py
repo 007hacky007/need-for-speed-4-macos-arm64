@@ -270,6 +270,28 @@ class ProgressTests(unittest.TestCase):
                          'The High Stakes Expansion Pack download from iplounge.net failed. Check your internet '
                          'connection and try again, or untick Include community cars and tracks.')
 
+    def test_rejected_copy_is_an_event_with_reason_and_inventory(self):
+        detected = {'files': 1327, 'bytes': 10, 'sha256': 'ab'}
+        rejected = build_app.SourceRejected('assets', detected=detected)
+        with self.mocked_pipeline():
+            with patch.object(build_app, 'verify_source', side_effect=rejected):
+                code, found = self.main('--progress', '--cache', str(self.root / 'cache'), '--', str(self.game()))
+        self.assertEqual(code, 1)
+        self.assertEqual(found[-1], {'error': str(rejected), 'reason': 'assets', 'detected': detected})
+        with self.mocked_pipeline():
+            with patch.object(build_app, 'verify_source', side_effect=build_app.SourceRejected('icon')):
+                _, found = self.main('--progress', '--cache', str(self.root / 'cache'), '--', str(self.game()))
+        self.assertEqual(set(found[-1]), {'error', 'reason'})
+
+    def test_cli_rejection_prints_detected_inventory(self):
+        rejected = build_app.SourceRejected('assets', detected={'files': 1327, 'bytes': 10, 'sha256': 'ab'})
+        err = io.StringIO()
+        with self.mocked_pipeline(), patch.object(build_app, 'verify_source', side_effect=rejected), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
+            self.assertEqual(build_app.main(['--cache', str(self.root / 'cache'), str(self.game())]), 1)
+        self.assertNotIn(PREFIX, out.getvalue())
+        self.assertIn('Detected: 1,327 files, 10 bytes', err.getvalue())
+
     def test_unexpected_exception_is_an_event_with_its_type(self):
         with self.mocked_pipeline():
             with patch.object(build_app, 'verify_source', side_effect=KeyError('x')):

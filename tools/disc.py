@@ -14,24 +14,33 @@ from typing import NamedTuple
 
 
 class DiscError(ValueError):
-    pass
+    """`reason` says whether the layout is unsupported, the CUE's BIN is missing, or the
+    image is unreadable (the default)."""
+
+    def __init__(self, message, reason='unreadable'):
+        super().__init__(message)
+        self.reason = reason
 
 
 def cue_image(path):
     """Resolve the supported single-track CUE without guessing a track layout."""
-    lines = [line.strip() for line in path.read_text(encoding='utf-8-sig').splitlines()
+    try:
+        text = path.read_text(encoding='utf-8-sig')
+    except UnicodeError as error:
+        raise DiscError(f'invalid CUE: {error}', 'image-layout') from error
+    lines = [line.strip() for line in text.splitlines()
              if line.strip() and not line.lstrip().upper().startswith('REM ')]
     if len(lines) != 3:
-        raise DiscError('CUE requires one FILE, one MODE1/2352 TRACK and INDEX 01 00:00:00')
+        raise DiscError('CUE requires one FILE, one MODE1/2352 TRACK and INDEX 01 00:00:00', 'image-layout')
     match = re.fullmatch(r'FILE\s+"([^"\x00]+)"\s+BINARY', lines[0], re.I)
     if not match or not re.fullmatch(r'TRACK\s+0?1\s+MODE1/2352', lines[1], re.I) or not re.fullmatch(r'INDEX\s+0?1\s+00:00:00', lines[2], re.I):
-        raise DiscError('unsupported CUE layout; expected one MODE1/2352 track at 00:00:00')
+        raise DiscError('unsupported CUE layout; expected one MODE1/2352 track at 00:00:00', 'image-layout')
     name = match[1]
     if name in ('.', '..') or any(c in name for c in '/\\:') or any(ord(c) < 32 for c in name):
-        raise DiscError('CUE BIN must be a filename beside the CUE')
+        raise DiscError('CUE BIN must be a filename beside the CUE', 'cue-image')
     image = path.parent / name
     if image.is_symlink() or not image.is_file():
-        raise DiscError('CUE BIN must be a regular file beside the CUE')
+        raise DiscError('CUE BIN must be a regular file beside the CUE', 'cue-image')
     return image
 
 
@@ -57,7 +66,7 @@ class Disc:
             else:
                 self.stride, self.offset = 2048, 0
             if is_cue and self.stride != 2352:
-                raise DiscError('CUE declares MODE1/2352 but BIN is not raw MODE1 data')
+                raise DiscError('CUE declares MODE1/2352 but BIN is not raw MODE1 data', 'image-layout')
             if size % self.stride:
                 raise DiscError(f'truncated image: {size} bytes, sector size {self.stride}')
             self.sectors = size // self.stride
@@ -77,7 +86,7 @@ class Disc:
                     self.root = data[156:190]
                     self.label = data[40:72].decode('utf-16-be' if is_joliet else 'ascii').strip(' \x00')
                     if data[128:132] != b'\x00\x08\x08\x00':
-                        raise DiscError('only 2048-byte ISO logical blocks are supported')
+                        raise DiscError('only 2048-byte ISO logical blocks are supported', 'image-layout')
             else:
                 raise DiscError('ISO volume terminator not found')
             if self.root is None:
