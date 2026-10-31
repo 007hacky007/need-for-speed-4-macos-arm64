@@ -27,7 +27,7 @@ The Builder shows a checklist:
 
 - **Mac**: Apple Silicon and a supported macOS version.
 - **Xcode command line tools**: **Install...** opens Apple's installer (about 2 GB).
-- **Build tools (Python)**: the Builder downloads its own private Python (about 70 MB with its packages) into `~/Library/Application Support/NFSIV Builder`. It never touches other Python installs.
+- **Build tools (Python)**: the Builder downloads its own private Python into `~/Library/Application Support/NFSIV Builder` and sets up its packages (a private environment) in `~/Library/Caches/NFSIV`, about 70 MB of downloads in all. It never touches other Python installs.
 - **Downloads**: VEG Modern Patch, MoltenVK, glslang and 7-Zip are downloaded during the build if they are not already cached. **Download** fetches them now.
 - **Game copy**: click **Choose...** or drag a folder, `.iso`, `.bin`, `.img`, `.cue` or `.ccd` onto the window. Only the European Road Challenge CD is supported. If your copy is rejected, click **Which copy works?** to see the required file count, size and checksums next to what your copy has.
 - **Destination**: where NFSIV.app is placed. The default is Applications.
