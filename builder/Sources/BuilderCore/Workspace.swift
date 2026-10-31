@@ -117,3 +117,18 @@ public func buildToolsState(pythonInstalled: Bool, tools: PipelineEvent?) -> Che
     if case .tools(python: _?)? = tools { return .ready("Installed") }
     return .blocked("Packages need to be set up again (small download)")
 }
+
+/// The Build tools row after `build_app.py --setup-only --progress` exited with `status` and
+/// printed `events`. Ready only when it exited cleanly and reported the package environment.
+public func setupResult(status: Int32, events: [PipelineEvent], pythonInstalled: Bool) -> CheckState {
+    guard status == 0 else {
+        let message = events.compactMap { event -> String? in
+            if case let .error(text) = event { return text }
+            return nil
+        }.last
+        return .blocked(message ?? "Could not set up the build tools. Check your internet connection and try again.")
+    }
+    let tools = events.last { if case .tools = $0 { return true } else { return false } }
+    let state = buildToolsState(pythonInstalled: pythonInstalled, tools: tools)
+    return state.isReady ? state : .blocked("The build tools are incomplete. Try again.")
+}

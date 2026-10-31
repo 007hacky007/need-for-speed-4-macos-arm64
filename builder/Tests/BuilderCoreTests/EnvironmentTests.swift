@@ -272,6 +272,24 @@ final class EnvironmentTests: XCTestCase {
         XCTAssertEqual(buildToolsState(pythonInstalled: true, tools: nil), packages)
     }
 
+    /// The lines `build_app.py --setup-only --progress` really prints (json.dumps spacing).
+    func testSetupResultFromRealPipelineOutput() {
+        let ready = #"NFSIV-EVENT {"tools": "ready", "python": "/Users/x/Library/Caches/NFSIV/python-3.12-3b25652d13cf-de725d7a/bin/python"}"#
+        let failed = #"NFSIV-EVENT {"error": "Could not set up the build tools. Check your internet connection and try again."}"#
+        let log = ["Collecting capstone==5.0.6", "Successfully installed capstone pefile cmake"].map(parsePipelineLine)
+        XCTAssertEqual(setupResult(status: 0, events: log + [parsePipelineLine(ready)], pythonInstalled: true), .ready("Installed"))
+        XCTAssertEqual(setupResult(status: 0, events: log, pythonInstalled: true),
+                       .blocked("The build tools are incomplete. Try again."))
+        XCTAssertEqual(setupResult(status: 0, events: [parsePipelineLine(ready)], pythonInstalled: false),
+                       .blocked("The build tools are incomplete. Try again."))
+        XCTAssertEqual(setupResult(status: 1, events: log + [parsePipelineLine(failed)], pythonInstalled: true),
+                       .blocked("Could not set up the build tools. Check your internet connection and try again."))
+        XCTAssertEqual(setupResult(status: 143, events: log, pythonInstalled: true),
+                       .blocked("Could not set up the build tools. Check your internet connection and try again."))
+        // The old shape {"tools": "<path>"} is not a ready report.
+        XCTAssertEqual(parsePipelineLine(#"NFSIV-EVENT {"tools": "/c/bin/python"}"#), .log(#"NFSIV-EVENT {"tools": "/c/bin/python"}"#))
+    }
+
     func testInstallCompletionArrivesOnMainThread() throws {
         let paths = BuilderPaths(support: tmp.appendingPathComponent("support"), cache: tmp.appendingPathComponent("cache"))
         let bad = tmp.appendingPathComponent("bad.tgz")

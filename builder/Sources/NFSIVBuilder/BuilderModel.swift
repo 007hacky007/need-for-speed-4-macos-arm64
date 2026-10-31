@@ -426,28 +426,20 @@ final class BuilderModel: ObservableObject {
     private func runSetup() {
         states[.buildTools] = .checking("Setting up build tools...")
         var output: [String] = []
-        var error: String?
-        var tools: PipelineEvent?
+        var events: [PipelineEvent] = []
         run(.setup(paths: paths, version: version), onEvent: { event in
+            events.append(event)
             switch event {
             case let .log(line): output.append(line)
             case let .step(_, title): output.append(title)
-            case .tools: tools = event
-            case let .error(message):
-                error = message
-                output.append("Error: \(message)")
+            case let .error(message): output.append("Error: \(message)")
             default: break
             }
         }, onExit: { [self] status in
             installingTools = false
             let details = (output + ["Setup exited with status \(status)."]).joined(separator: "\n")
-            guard status == 0 else {
-                let message = error.map(Self.plain)
-                    ?? "Could not set up the build tools. Check your internet connection and try again."
-                return toolsFailed(message, details: details)
-            }
-            let state = buildToolsState(pythonInstalled: PythonRuntime.isInstalled(paths), tools: tools)
-            guard state.isReady else { return toolsFailed("The build tools are incomplete. Try again.", details: details) }
+            let state = setupResult(status: status, events: events, pythonInstalled: PythonRuntime.isInstalled(paths))
+            guard state.isReady else { return toolsFailed(Self.plain(state.message), details: details) }
             states[.buildTools] = state
             refreshBuildTools()
         })

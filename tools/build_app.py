@@ -324,7 +324,8 @@ def main(argv=None):
             check_platform()
             python = bootstrap(args.cache.expanduser().absolute())
             if PROGRESS:
-                emit({'tools': str(python)})
+                # The same shape as `builder_cli.py tools status`, which the Builder parses.
+                emit({'tools': 'ready', 'python': str(python)})
             return 0
         check_host()
         result = build(args)

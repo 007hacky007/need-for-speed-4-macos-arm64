@@ -195,7 +195,7 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(code, 0)
         bootstrap.assert_called_once_with(self.root / 'cache')
         self.assertFalse(any('xcrun' in call for call in calls), calls)
-        self.assertEqual(found[-1], {'tools': str(python)})
+        self.assertEqual(found[-1], {'tools': 'ready', 'python': str(python)})
 
     def test_environment_name_includes_interpreter(self):
         cache = self.root / 'cache'

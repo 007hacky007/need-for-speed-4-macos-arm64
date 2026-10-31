@@ -81,6 +81,9 @@ final class EndToEndTests: XCTestCase {
 
         let setup = try run(.setup(paths: paths, version: version), timeout: 900)
         XCTAssertEqual(setup.status, 0, setup.lines.suffix(30).joined(separator: "\n"))
+        // The Install button decides from the setup run alone, exactly like this.
+        XCTAssertEqual(setupResult(status: setup.status, events: setup.events, pythonInstalled: PythonRuntime.isInstalled(paths)),
+                       .ready("Installed"))
         let tools = try run(.toolsStatus(paths: paths, version: version), timeout: 60)
         let toolsEvent = tools.events.first { if case .tools = $0 { return true } else { return false } }
         XCTAssertEqual(buildToolsState(pythonInstalled: true, tools: toolsEvent), .ready("Installed"))
