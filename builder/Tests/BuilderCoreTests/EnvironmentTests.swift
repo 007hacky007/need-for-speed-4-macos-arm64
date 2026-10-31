@@ -88,6 +88,7 @@ final class EnvironmentTests: XCTestCase {
 
     func testCacheOverrideFromEnvironment() {
         XCTAssertEqual(BuilderPaths(environment: ["NFSIV_BUILDER_CACHE": "/tmp/x"]).cache.path, "/tmp/x")
+        XCTAssertEqual(BuilderPaths(environment: ["NFSIV_BUILDER_SUPPORT": "/tmp/s"]).support.path, "/tmp/s")
         XCTAssertTrue(BuilderPaths(environment: ["NFSIV_BUILDER_CACHE": ""]).cache.path.hasSuffix("/Library/Caches/NFSIV"))
     }
 

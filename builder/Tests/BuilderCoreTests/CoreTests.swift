@@ -76,6 +76,18 @@ final class CoreTests: XCTestCase {
         }
     }
 
+    func testGameCheckDetailsKeepMessageAndDetectedInventory() {
+        let log = ["", "Extracting NFS.ccd to check it", "  ",
+                   "Failed: This copy does not match.", "Detected: 2 files, 3 bytes, SHA-256 ab; expected 1,328 files, 547,813,845 bytes."]
+        XCTAssertEqual(gameCheckDetails(message: "This copy does not match.", log: log), """
+            This copy does not match.
+            Extracting NFS.ccd to check it
+            Failed: This copy does not match.
+            Detected: 2 files, 3 bytes, SHA-256 ab; expected 1,328 files, 547,813,845 bytes.
+            """)
+        XCTAssertEqual(gameCheckDetails(message: "Bad.", log: []), "Bad.")
+    }
+
     func testProgressAndDisk() {
         XCTAssertEqual(buildSteps(community: false).map(\.id),
                        ["extract", "verify", "setup", "dependencies", "prepare", "translate", "compile", "package"])

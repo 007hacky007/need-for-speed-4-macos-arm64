@@ -9,15 +9,17 @@ public struct BuilderPaths {
     /// The download cache shared with ./build.sh, passed to every pipeline command with --cache.
     public let cache: URL
 
-    /// `NFSIV_BUILDER_CACHE` (tests only) overrides the shared cache.
-    public init(support: URL = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Library/Application Support/NFSIV Builder"),
-                cache: URL? = nil,
+    /// `NFSIV_BUILDER_CACHE` and `NFSIV_BUILDER_SUPPORT` (tests and development only) override
+    /// the shared cache and the support folder.
+    public init(support: URL? = nil, cache: URL? = nil,
                 environment: [String: String] = ProcessInfo.processInfo.environment) {
-        self.support = support
-        self.cache = cache
-            ?? environment["NFSIV_BUILDER_CACHE"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/NFSIV")
+        func override(_ name: String) -> URL? {
+            environment[name].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        self.support = support ?? override("NFSIV_BUILDER_SUPPORT")
+            ?? home.appendingPathComponent("Library/Application Support/NFSIV Builder")
+        self.cache = cache ?? override("NFSIV_BUILDER_CACHE") ?? home.appendingPathComponent("Library/Caches/NFSIV")
     }
 
     public var python: URL { support.appendingPathComponent("python") }

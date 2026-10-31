@@ -42,6 +42,12 @@ public func requiredFreeBytes(community: Bool) -> Int64 {
     community ? 8_000_000_000 : 4_000_000_000
 }
 
+/// The text behind Copy details on a rejected game copy: the plain message, then the non-empty
+/// lines the check printed, which include the detected and expected inventory.
+public func gameCheckDetails(message: String, log: [String]) -> String {
+    ([message] + log.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }).joined(separator: "\n")
+}
+
 public func diskSpaceCheck(available: Int64, community: Bool) -> CheckState {
     let gb = { (b: Int64) in String(format: "%.1f GB", Double(b) / 1_000_000_000) }
     let needed = requiredFreeBytes(community: community)

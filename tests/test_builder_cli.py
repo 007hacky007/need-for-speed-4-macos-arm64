@@ -36,8 +36,8 @@ class BuilderCliTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def run_cli(self, *argv):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        out, self.stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(self.stderr):
             code = builder_cli.main(list(argv))
         found = [json.loads(line[len(PREFIX):]) for line in out.getvalue().splitlines() if line.startswith(PREFIX)]
         return code, found
@@ -60,6 +60,9 @@ class BuilderCliTests(unittest.TestCase):
         self.assertEqual(found[-1]['reason'], 'assets')
         self.assertEqual(found[-1]['error'], game_source.MESSAGES['assets'])
         self.assertEqual(found[-1]['detected']['files'], 2)
+        # The log (Copy details) keeps the detected inventory next to the expected one.
+        self.assertIn('Detected: 2 files, 3 bytes, SHA-256 ', self.stderr.getvalue())
+        self.assertIn('expected 1,328 files', self.stderr.getvalue())
         fetch.assert_not_called()
         self.assertEqual(snapshot(folder), before)
         self.assertFalse(self.cache.exists())

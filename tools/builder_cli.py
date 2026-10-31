@@ -130,7 +130,8 @@ def main(argv=None):
     except Exception as error:
         if not isinstance(error, (ValueError, RuntimeError, OSError, subprocess.SubprocessError)):
             traceback.print_exc()
-        print(f'Failed: {error}', file=sys.stderr, flush=True)
+        detail = game_source.describe_rejection(error) if isinstance(error, game_source.SourceRejected) else error
+        print(f'Failed: {detail}', file=sys.stderr, flush=True)
         emit(build_app.failure_event(error))
         return 1
     return 0
