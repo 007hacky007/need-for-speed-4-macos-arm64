@@ -149,20 +149,25 @@ final class BuilderModel: ObservableObject {
         }
     }
 
-    /// Free space on the workspace volume and, if different, the cache volume; the smaller counts.
+    /// Free space on the workspace volume and, if different, the cache volume (the smaller
+    /// counts), plus the destination's volume when the app has to be copied onto another one.
     private func diskSpaceState() -> CheckState {
-        func available(_ start: URL) -> Int64? {
+        func volume(_ start: URL) -> (id: NSObject?, available: Int64)? {
             var url = start
             while !FileManager.default.fileExists(atPath: url.path) && url.path != "/" {
                 url = url.deletingLastPathComponent()
             }
-            let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            return values?.volumeAvailableCapacityForImportantUsage
+            let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeIdentifierKey])
+            guard let available = values?.volumeAvailableCapacityForImportantUsage else { return nil }
+            return (values?.volumeIdentifier as? NSObject, available)
         }
-        guard let support = available(paths.support), let cache = available(paths.cache) else {
+        guard let support = volume(paths.support), let cache = volume(paths.cache),
+              let target = volume(destination) else {
             return .blocked("Could not read the free space on this disk")
         }
-        return diskSpaceCheck(available: min(support, cache), community: community)
+        let elsewhere = target.id == nil || (target.id != support.id && target.id != cache.id)
+        return diskSpaceCheck(available: min(support.available, cache.available), community: community,
+                              destinationAvailable: elsewhere ? target.available : nil)
     }
 
     func setCommunity(_ value: Bool) {
@@ -177,6 +182,7 @@ final class BuilderModel: ObservableObject {
         destination = url
         defaults.set(url.path, forKey: "destination")
         states[.destination] = destinationCheck(url)
+        states[.diskSpace] = diskSpaceState()
     }
 
     static let gameExtensions = ["iso", "bin", "img", "cue", "ccd"]

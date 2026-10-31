@@ -106,4 +106,18 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(diskSpaceCheck(available: 1_500_000_000, community: false),
                        .blocked("Only 1.5 GB free, \(String(format: "%.1f", Double(requiredFreeBytes(community: false)) / 1e9)) GB needed"))
     }
+
+    func testDestinationOnAnotherVolumeNeedsRoomForTheApp() {
+        let plenty: Int64 = 100_000_000_000
+        XCTAssertEqual(diskSpaceCheck(available: plenty, community: false, destinationAvailable: nil), .ready("100.0 GB free"))
+        XCTAssertEqual(diskSpaceCheck(available: plenty, community: false, destinationAvailable: 700_000_000), .ready("100.0 GB free"))
+        XCTAssertEqual(diskSpaceCheck(available: plenty, community: false, destinationAvailable: 500_000_000),
+                       .blocked("Only 0.5 GB free in the destination, 0.7 GB needed"))
+        XCTAssertEqual(diskSpaceCheck(available: plenty, community: true, destinationAvailable: 1_000_000_000),
+                       .blocked("Only 1.0 GB free in the destination, 1.4 GB needed"))
+        // The build volume is reported first.
+        if case let .blocked(text) = diskSpaceCheck(available: 1_000_000_000, community: false, destinationAvailable: 1) {
+            XCTAssertTrue(text.hasPrefix("Only 1.0 GB free, "))
+        } else { XCTFail() }
+    }
 }

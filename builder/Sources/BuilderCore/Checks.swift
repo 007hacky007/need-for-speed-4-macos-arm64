@@ -50,11 +50,22 @@ public func gameCheckDetails(message: String, log: [String]) -> String {
     ([message] + log.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }).joined(separator: "\n")
 }
 
-public func diskSpaceCheck(available: Int64, community: Bool) -> CheckState {
+/// Space the installed NFSIV.app takes in the destination (measured 646 MB, or 1,255 MB with
+/// community content). On the build's own volume the copy is an APFS clone and costs nothing.
+public func appBytes(community: Bool) -> Int64 {
+    community ? 1_400_000_000 : 700_000_000
+}
+
+/// `available` is the free space of the workspace and cache volume; `destinationAvailable` is
+/// the destination's free space when it is on another volume, nil when it is the same one.
+public func diskSpaceCheck(available: Int64, community: Bool, destinationAvailable: Int64? = nil) -> CheckState {
     let gb = { (b: Int64) in String(format: "%.1f GB", Double(b) / 1_000_000_000) }
     let needed = requiredFreeBytes(community: community)
-    if available >= needed {
-        return .ready("\(gb(available)) free")
+    guard available >= needed else {
+        return .blocked("Only \(gb(available)) free, \(gb(needed)) needed")
     }
-    return .blocked("Only \(gb(available)) free, \(gb(needed)) needed")
+    if let destination = destinationAvailable, destination < appBytes(community: community) {
+        return .blocked("Only \(gb(destination)) free in the destination, \(gb(appBytes(community: community))) needed")
+    }
+    return .ready("\(gb(available)) free")
 }
