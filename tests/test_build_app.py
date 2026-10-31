@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools import build_app
+from tools import build_app, game_source
 
 PREFIX = 'NFSIV-EVENT '
 
@@ -201,7 +201,8 @@ class ProgressTests(unittest.TestCase):
                               '--cache', str(self.root / 'cache'), '--', '/nonexistent/game.iso'],
                              text=True, capture_output=True)
         self.assertEqual(run.returncode, 1)
-        self.assertIn('error', events(run.stdout)[-1])
+        self.assertEqual(events(run.stdout)[-1], {'error': game_source.MESSAGES['missing'], 'reason': 'missing'})
+        self.assertFalse((self.root / 'cache').exists())
 
     def test_argument_errors_are_events_in_progress_mode(self):
         code, found = self.main('--progress', '--no-such-option')
