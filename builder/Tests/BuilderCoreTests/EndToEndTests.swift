@@ -117,13 +117,20 @@ final class EndToEndTests: XCTestCase {
         let downloads = try run(.downloadsStatus(paths: paths, version: version, community: community), timeout: 120)
         mark("downloads status: \(downloads.events.filter { if case .downloads = $0 { return true } else { return false } })")
 
-        // 4. A build cancelled once compiling has started: nothing from it may survive.
+        // 4. A build cancelled once compiling has started: nothing from it may survive. It is the
+        //    cold build (glslang is compiled here), so its step times and disk use count too.
+        let sampler = DiskSampler(folders: [paths.support, paths.cache, tmp.appendingPathComponent("Applications")])
+        sampler.start()
         let workspace = paths.workspace(version: version).path
         var group: pid_t = 0
         var compilerSeen = false
+        var coldSteps: [(String, Date)] = []
+        let python = Self.resolved(paths.pythonExecutable.path)
         let cancelled = try run(.build(paths: paths, version: version, game: game, community: false), timeout: 3600) { event, runner in
+            if case let .step(id, _) = event { coldSteps.append((id, Date())) }
             guard case .step(id: "compile", _) = event else { return }
-            group = Self.processGroup(matching: { $0.contains(workspace) && $0.contains("build_app.py") }) ?? 0
+            // The runner starts `<private python> -B tools/build_app.py ...` in its own group.
+            group = Self.processGroup(matching: { Self.resolved($0).hasPrefix(python) && $0.contains("tools/build_app.py") }) ?? 0
             let deadline = Date().addingTimeInterval(60)
             while Date() < deadline && !compilerSeen {
                 compilerSeen = Self.processes(inGroup: group).contains { $0.contains("clang") }
@@ -133,6 +140,9 @@ final class EndToEndTests: XCTestCase {
             runner.cancel()
         }
         mark("cancelled build exited with \(cancelled.status)")
+        for (index, (id, start)) in coldSteps.enumerated().dropLast() {
+            print("E2E cold step \(id): \(String(format: "%.1f", coldSteps[index + 1].1.timeIntervalSince(start))) s")
+        }
         XCTAssertNotEqual(group, 0, "found the build's process group")
         XCTAssertTrue(compilerSeen, "clang was running when the build was cancelled")
         XCTAssertNotEqual(cancelled.status, 0)
@@ -150,8 +160,6 @@ final class EndToEndTests: XCTestCase {
         mark("nothing left from the cancelled build")
 
         // 5. The full build, timed per step, with the peak disk use sampled every 5 s.
-        let sampler = DiskSampler(folders: [paths.support, paths.cache, tmp.appendingPathComponent("Applications")])
-        sampler.start()
         var stepTimes: [(String, Date)] = []
         let full = try run(.build(paths: paths, version: version, game: game, community: community), timeout: 7200) { event, _ in
             if case let .step(id, _) = event { stepTimes.append((id, Date())) }
@@ -192,12 +200,12 @@ final class EndToEndTests: XCTestCase {
             var pid: pid_t?
             let until = Date().addingTimeInterval(20)
             while pid == nil && Date() < until {
-                pid = Self.ps().first { $0.command.hasPrefix(launcher) }?.pid
+                pid = Self.ps().first { Self.resolved($0.command).hasPrefix(launcher) }?.pid
                 if pid == nil { usleep(200_000) }
             }
             XCTAssertNotNil(pid, "NFSIVLauncher started")
             if let pid = pid { kill(pid, SIGTERM) }
-            mark("launcher started and stopped")
+            mark("launcher \(pid == nil ? "not found" : "started and stopped")")
         } else {
             mark("launcher smoke check skipped: \(logs.path) does not exist")
         }
@@ -318,6 +326,14 @@ final class EndToEndTests: XCTestCase {
             guard parts.count == 3, let pid = pid_t(parts[0]), let pgid = pid_t(parts[1]) else { return nil }
             return (pid, pgid, String(parts[2]))
         }
+    }
+
+    /// A ps command line with /private/var or /private/tmp shown as /var or /tmp, as URLs spell them.
+    private static func resolved(_ command: String) -> String {
+        for prefix in ["/private/var/", "/private/tmp/"] where command.hasPrefix(prefix) {
+            return String(command.dropFirst("/private".count))
+        }
+        return command
     }
 
     private static func processGroup(matching predicate: (String) -> Bool) -> pid_t? {
