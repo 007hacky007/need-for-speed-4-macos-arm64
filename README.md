@@ -6,9 +6,46 @@ Build a native ARM64 macOS app for **Need for Speed: High Stakes / Road Challeng
 
 ![NFS IV macOS launcher](docs/images/launcher.png)
 
-## Build and play
+## Easiest way: NFSIV Builder
 
-You need an Apple Silicon Mac, native ARM64 **Python 3.11 or newer** with pip/venv, Xcode Command Line Tools, and an internet connection for the first build. Install the Apple tools with `xcode-select --install` if needed. Run the following commands in this repository's directory:
+NFSIV Builder is a small app that installs what is missing and builds NFSIV.app from your own game copy. It needs an Apple Silicon Mac with **macOS 12 or newer**. On macOS 11, use [Build from Terminal](#build-from-terminal) instead.
+
+1. Download `NFSIV-Builder.dmg` from the [Releases page](../../releases/latest) of this repository and open it. You do not need to copy NFSIV Builder anywhere.
+
+**On macOS 14 or older:** right-click **NFSIV Builder** and choose **Open**.
+
+**macOS 15 or newer:**
+
+2. Run **NFSIV Builder** from the opened disk.
+3. macOS says it cannot be opened. Click **Done**.
+4. Open **System Settings**, then **Privacy & Security**, and scroll down.
+5. Click **Open Anyway**.
+
+NFSIV Builder is free and open source but not signed by Apple, so macOS asks once. The same steps are drawn on the disk's background.
+
+The Builder shows a checklist:
+
+- **Mac**: Apple Silicon and a supported macOS version.
+- **Xcode command line tools**: **Install...** opens Apple's installer (about 2 GB).
+- **Build tools (Python)**: the Builder downloads its own private Python (about 70 MB with its packages) into `~/Library/Application Support/NFSIV Builder`. It never touches other Python installs.
+- **Downloads**: VEG Modern Patch, MoltenVK, glslang and 7-Zip are downloaded during the build if they are not already cached. **Download** fetches them now.
+- **Game copy**: click **Choose...** or drag a folder, `.iso`, `.bin`, `.img`, `.cue` or `.ccd` onto the window. Only the European Road Challenge CD is supported. If your copy is rejected, click **Which copy works?** to see the required file count, size and checksums next to what your copy has.
+- **Destination**: where NFSIV.app is placed. The default is Applications.
+- **Free disk space**: enough room for the build.
+
+Below the list, tick **Include community cars and tracks** to add the High Stakes Expansion Pack's cars, tracks and pursuit traffic (an extra download and more disk space). Fix the red rows, then click **Build NFSIV.app**. When it finishes you can click **Play**, **Show in Finder** or **Remove build files**; your saves are never changed. The Builder shares the download cache `~/Library/Caches/NFSIV` with `./build.sh`.
+
+## What you need
+
+- An Apple Silicon Mac. NFSIV Builder needs macOS 12 or newer; the Terminal build and the game it produces support macOS 11 or newer.
+- Xcode command line tools. NFSIV Builder offers to install them; for the Terminal build, install them once with `xcode-select --install`. These are the only part that comes from Apple.
+- Python: NFSIV Builder installs its own. The Terminal build needs a native ARM64 **Python 3.11 or newer** with pip/venv, available as `python3`.
+- Internet access for the first build's Python packages, patches and build dependencies.
+- Your own supported game copy (see [Supported game copy](#supported-game-copy)).
+
+## Build from Terminal
+
+Run the following commands in this repository's directory:
 
 ```sh
 ./build.sh game.iso
