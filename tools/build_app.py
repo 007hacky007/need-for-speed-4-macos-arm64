@@ -131,12 +131,25 @@ def bootstrap(cache):
                         '--cache-dir', str(cache / 'pip'), '--retries', '2', '--timeout', '30',
                         '--only-binary=:all:', '-r', str(requirements)], check=True)
         marker.write_text(stamp)
+    unquarantine(environment)
     return python
+
+
+def unquarantine(path):
+    """Clear com.apple.quarantine from a tool this build runs (recursively for folders).
+
+    Files written by processes started from a quarantined NFSIV Builder (a fresh download
+    run from its disk image) can inherit the flag, and Gatekeeper then refuses to run the
+    downloaded 7zz, the pip cmake or the locally built glslang. Missing flags are fine."""
+    if Path(path).exists():
+        subprocess.run(['/usr/bin/xattr', '-d', '-r', 'com.apple.quarantine', str(path)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
 def dependencies(cache, python, work):
     archives = {name: fetch(cache, *source) for name, source in SOURCES.items()}
     extract_tar(archives['7zip'], work / '7zip')
+    unquarantine(work / '7zip')
     extractor = work / '7zip/7zz'
     if not extractor.is_file() or not os.access(extractor, os.X_OK):
         raise ValueError('7-Zip archive is missing its executable')
@@ -176,6 +189,7 @@ def dependencies(cache, python, work):
         os.replace(temporary, compiler)
         marker.write_text(json.dumps({'source_sha256': SOURCES['glslang'][2],
                                       'binary_sha256': digest(compiler)}) + '\n')
+    unquarantine(compiler)
     return extractor, archives['veg'], moltenvk, compiler
 
 

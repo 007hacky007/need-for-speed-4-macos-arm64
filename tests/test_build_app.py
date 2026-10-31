@@ -101,6 +101,62 @@ class BuildAppTests(unittest.TestCase):
             self.assertEqual(package.call_args.kwargs['moltenvk'], root / 'MoltenVK')
 
 
+def quarantined(path):
+    return subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)],
+                          capture_output=True).returncode == 0
+
+
+def quarantine(path):
+    subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', '0081;00000000;Test;', str(path)], check=True)
+
+
+class QuarantineTests(unittest.TestCase):
+    def test_dependencies_clear_quarantine_on_the_tools_they_run(self):
+        with tempfile.TemporaryDirectory(prefix='quarantine ') as temporary:
+            root = Path(temporary)
+            cache, work = root / 'cache', root / 'work'
+            cache.mkdir()
+            work.mkdir()
+            compiler = cache / 'glslang-14.3.0-arm64'
+            compiler.write_bytes(b'glslang')
+            compiler.with_suffix('.json').write_text(json.dumps(
+                {'source_sha256': build_app.SOURCES['glslang'][2], 'binary_sha256': build_app.digest(compiler)}))
+            quarantine(compiler)
+
+            def extract(archive, destination, include=None):
+                if archive.name == '7zip':
+                    (destination / '7zz').parent.mkdir(parents=True)
+                    (destination / '7zz').write_bytes(b'7zz')
+                    (destination / '7zz').chmod(0o755)
+                    quarantine(destination / '7zz')
+                else:
+                    for relative in ('MoltenVK/LICENSE', 'MoltenVK/MoltenVK/include/vulkan/vulkan.h',
+                                     'MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib'):
+                        (destination / relative).parent.mkdir(parents=True, exist_ok=True)
+                        (destination / relative).write_bytes(b'x')
+
+            with patch.object(build_app, 'fetch', side_effect=lambda cache, name, url, sha: root / name.split('-')[0]), \
+                    patch.object(build_app, 'SOURCES', {key: (key, 'https://example.invalid/' + key, value[2])
+                                                        for key, value in build_app.SOURCES.items()}), \
+                    patch.object(build_app, 'extract_tar', side_effect=extract):
+                extractor, _, _, glslang = build_app.dependencies(cache, root / 'python', work)
+            self.assertFalse(quarantined(extractor))
+            self.assertFalse(quarantined(glslang))
+            self.assertEqual(glslang.read_bytes(), b'glslang')
+
+    def test_unquarantine_is_recursive_and_ignores_missing_flags(self):
+        with tempfile.TemporaryDirectory(prefix='quarantine ') as temporary:
+            folder = Path(temporary) / 'venv'
+            (folder / 'bin').mkdir(parents=True)
+            (folder / 'bin/cmake').write_text('x')
+            for path in (folder, folder / 'bin/cmake'):
+                quarantine(path)
+            (folder / 'bin/plain').write_text('x')
+            build_app.unquarantine(folder)
+            build_app.unquarantine(Path(temporary) / 'missing')
+            self.assertFalse(any(quarantined(p) for p in (folder, folder / 'bin/cmake', folder / 'bin/plain')))
+
+
 class ProgressTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='build events ')
