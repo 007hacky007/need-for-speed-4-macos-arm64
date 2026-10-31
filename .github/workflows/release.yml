@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt dmgbuild==1.6.7
+
+      - name: Test
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          python -B -m unittest discover -s tests
+          swift test --package-path builder
+
+      - name: Build app
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          python tools/make_builder.py --version "$VERSION" --output dist
+
+      - name: Build disk image
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          dmgbuild -s builder/dmg/settings.py -D app="dist/NFSIV Builder.app" "NFSIV Builder $VERSION" dist/NFSIV-Builder.dmg
+          (cd dist && shasum -a 256 NFSIV-Builder.dmg > NFSIV-Builder.dmg.sha256)
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" dist/NFSIV-Builder.dmg dist/NFSIV-Builder.dmg.sha256 --title "NFSIV Builder $VERSION" --generate-notes
