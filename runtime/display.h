@@ -2,5 +2,5 @@
 #define NFSIV_DISPLAY_H
 typedef struct {double x,y,w,h;} DisplayRect;
 DisplayRect display_fit(unsigned,unsigned,double,double);
-void display_mouse(unsigned,unsigned,double,double,double,double,int *,int *);
+int display_motion(double,double,double *);
 #endif

@@ -68,6 +68,8 @@ Fix the red rows, then click **Build NFSIV.app**. When it finishes you can click
 
 Open NFSIV.app. The launcher appears first. Choose the renderer (Vulkan or Metal), race resolution, fullscreen, audio and intro movies, and whether to use the SilentPatch input fixes and the projected-headlight depth correction. With community content, choose a content profile too. Then click **Play**. Your choices are remembered for the next launch.
 
+While the game is in front it takes the mouse, as it does on Windows, so the game cursor reaches every edge of the picture. In a window this starts when the pointer first moves over the picture. Press Cmd+Tab to switch to another app and get the Mac pointer back.
+
 You can move the app to another folder; the bundled engine and Vulkan runtime use relative paths. Use **Open Saves** and **Open Logs** in the launcher to find your files. If the game has a graphics problem, try Metal in the launcher to compare it with Vulkan.
 
 ## Which game copy works

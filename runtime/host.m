@@ -17,6 +17,24 @@ static BOOL fullscreen_active;
 static NSRect windowed_frame;
 static NSWindowStyleMask windowed_style;
 static NSApplicationPresentationOptions windowed_presentation;
+static NSView *game_view;
+static BOOL mouse_captured;
+static double motion_x,motion_y;
+
+/* Windows DirectInput gives the game raw mouse motion that never stops at a
+   screen edge. Freeze the hidden Mac cursor over the picture, so clicks land
+   there, and pass on its motion instead of its position. */
+static void mouse_reassociate(void){CGAssociateMouseAndMouseCursorPosition(true);}
+static void mouse_capture(void){
+    if(!window.isKeyWindow||!game_view)return;
+    NSRect r=[window convertRectToScreen:[game_view convertRect:game_view.bounds toView:nil]];
+    CGWarpMouseCursorPosition(CGPointMake(NSMidX(r),NSScreen.screens.firstObject.frame.size.height-NSMidY(r)));
+    int32_t dx,dy;CGGetLastMouseDelta(&dx,&dy);
+    if(mouse_captured)return;
+    static BOOL registered;if(!registered){registered=YES;atexit(mouse_reassociate);}
+    CGAssociateMouseAndMouseCursorPosition(false);mouse_captured=YES;motion_x=motion_y=0;
+}
+static void mouse_release(void){if(mouse_captured){mouse_captured=NO;mouse_reassociate();}}
 
 void *host_metal_device(void){if(!device)device=MTLCreateSystemDefaultDevice();return (__bridge void *)device;}
 void *host_metal_queue(void){if(!queue){host_metal_device();queue=[device newCommandQueue];}return (__bridge void *)queue;}
@@ -36,7 +54,9 @@ void host_toggle_fullscreen(void){
         [window setFrame:windowed_frame display:YES];
     }
     window.contentView.needsLayout=YES;[window.contentView layoutSubtreeIfNeeded];
-    [window makeKeyAndOrderFront:nil];
+    /* A style change makes the window its own first responder, which drops typing. */
+    [window makeFirstResponder:game_view];[window makeKeyAndOrderFront:nil];
+    if(mouse_captured||fullscreen_active)mouse_capture();
 }
 void host_close_window(void){atomic_store(&closing,1);}
 void host_window_info(void){
@@ -109,18 +129,22 @@ static Key key(unsigned code){
     uint8_t state[256];input_keyboard_state(state);
     input_key(k.scan,k.vk,(event.modifierFlags&flag)&&!state[k.scan]);
 }
-- (void)updateTrackingAreas{
-    for(NSTrackingArea *area in self.trackingAreas.copy)[self removeTrackingArea:area];
-    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:self.bounds
-        options:NSTrackingMouseMoved|NSTrackingActiveInKeyWindow|NSTrackingInVisibleRect owner:self userInfo:nil]];
-    [super updateTrackingAreas];
+/* In a window the mouse is taken once it is over the picture; fullscreen takes it anywhere. */
+- (BOOL)takeMouse:(NSEvent *)event{
+    if(mouse_captured)return YES;
+    if(!fullscreen_active&&!NSPointInRect([self convertPoint:event.locationInWindow fromView:nil],self.bounds))return NO;
+    mouse_capture();return NO;
 }
 - (void)mouse:(NSEvent *)event button:(int)button down:(int)down wheel:(int)wheel{
-    NSPoint p=[self convertPoint:event.locationInWindow fromView:nil];
-    int x,y;display_mouse(width,height,self.bounds.size.width,self.bounds.size.height,p.x,self.bounds.size.height-p.y,&x,&y);
-    input_mouse(x,y,button,down,wheel);
+    if(![self takeMouse:event]&&!mouse_captured)return;
+    int x,y;input_cursor(&x,&y);input_mouse(x,y,button,down,wheel);
 }
-- (void)mouseMoved:(NSEvent *)event{[self mouse:event button:-1 down:0 wheel:0];}
+/* The first event after taking the mouse is skipped: it can include the warp. */
+- (void)mouseMoved:(NSEvent *)event{
+    if(![self takeMouse:event]||self.bounds.size.width<=0||self.bounds.size.height<=0)return;
+    input_mouse_motion(display_motion(event.deltaX,width/self.bounds.size.width,&motion_x),
+        display_motion(event.deltaY,height/self.bounds.size.height,&motion_y),(int)width,(int)height);
+}
 - (void)mouseDragged:(NSEvent *)event{[self mouseMoved:event];}
 - (void)rightMouseDragged:(NSEvent *)event{[self mouseMoved:event];}
 - (void)mouseDown:(NSEvent *)event{[self mouse:event button:0 down:1 wheel:0];}
@@ -139,7 +163,7 @@ static Key key(unsigned code){
 - (instancetype)initWithFrame:(NSRect)frame{
     if((self=[super initWithFrame:frame])){
         self.wantsLayer=YES;self.layer.backgroundColor=NSColor.blackColor.CGColor;
-        self.gameView=[[NFSIVView alloc] initWithFrame:self.bounds];[self addSubview:self.gameView];
+        self.gameView=[[NFSIVView alloc] initWithFrame:self.bounds];[self addSubview:self.gameView];game_view=self.gameView;
     }
     return self;
 }
@@ -162,8 +186,10 @@ static Key key(unsigned code){
 @implementation NFSIVWindow
 - (BOOL)canBecomeKeyWindow { return YES; }
 - (void)toggleGameFullscreen:(id)sender{(void)sender;host_toggle_fullscreen();}
-- (void)windowDidBecomeKey:(NSNotification *)notification{(void)notification;input_focus(1);}
-- (void)windowDidResignKey:(NSNotification *)notification{(void)notification;input_focus(0);}
+- (void)windowDidBecomeKey:(NSNotification *)notification{
+    (void)notification;[self makeFirstResponder:game_view];if(fullscreen_active)mouse_capture();input_focus(1);
+}
+- (void)windowDidResignKey:(NSNotification *)notification{(void)notification;mouse_release();input_focus(0);}
 - (BOOL)windowShouldClose:(NSWindow *)sender { (void)sender; atomic_store(&closing,1); return NO; }
 @end
 

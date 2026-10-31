@@ -77,10 +77,10 @@ void input_focus(int active){
     pthread_mutex_unlock(&lock);
     if(keyboard_event)win32_signal_event(keyboard_event);if(mouse_event)win32_signal_event(mouse_event);
 }
-void input_mouse(int x,int y,int button,int down,int wheel){
-    if(getenv("NFSIV_INPUT_TRACE"))fprintf(stderr,"host mouse x=%d y=%d button=%d down=%d\n",x,y,button,down);
-    pthread_mutex_lock(&lock);
-    int dx=x-mouse_x,dy=y-mouse_y;mouse_x=x;mouse_y=y;delta_x+=dx;delta_y+=dy;delta_z+=wheel;
+/* DirectInput reports motion separately from the clamped cursor position, so
+   motion keeps flowing when the position is already at an edge. */
+static void mouse_update(int x,int y,int dx,int dy,int button,int down,int wheel){
+    mouse_x=x;mouse_y=y;delta_x+=dx;delta_y+=dy;delta_z+=wheel;
     if(dx)event(2,0,(uint32_t)dx);if(dy)event(2,4,(uint32_t)dy);if(wheel)event(2,8,(uint32_t)wheel);
     if(button>=0&&button<8){buttons[button]=down?128:0;event(2,12+(unsigned)button,buttons[button]);}
     uint32_t wp=(buttons[swapped?1:0]?1:0)|(buttons[swapped?0:1]?2:0)|(buttons[2]?16:0)|(vkeys[0x10]?4:0)|(vkeys[0x11]?8:0);
@@ -88,6 +88,22 @@ void input_mouse(int x,int y,int button,int down,int wheel){
     if(dx||dy)message(0x200,wp,lp);
     if(button>=0&&button<3){int mapped=button<2?button^swapped:button;message((uint32_t[]){0x201,0x204,0x207}[mapped]+(down?0:1),wp,lp);}
     if(wheel)message(0x20a,wp|((uint32_t)(uint16_t)wheel<<16),lp);
+}
+void input_mouse(int x,int y,int button,int down,int wheel){
+    if(getenv("NFSIV_INPUT_TRACE"))fprintf(stderr,"host mouse x=%d y=%d button=%d down=%d\n",x,y,button,down);
+    pthread_mutex_lock(&lock);
+    mouse_update(x,y,x-mouse_x,y-mouse_y,button,down,wheel);
+    uint32_t notification=queues[1].notification;
+    pthread_mutex_unlock(&lock);
+    if(notification)win32_signal_event(notification);
+}
+void input_mouse_motion(int dx,int dy,int width,int height){
+    if(!dx&&!dy)return;
+    if(getenv("NFSIV_INPUT_TRACE"))fprintf(stderr,"host mouse motion dx=%d dy=%d\n",dx,dy);
+    pthread_mutex_lock(&lock);
+    long x=(long)mouse_x+dx,y=(long)mouse_y+dy;
+    x=x<0?0:x>=width?width-1:x;y=y<0?0:y>=height?height-1:y;
+    mouse_update((int)x,(int)y,dx,dy,-1,0,0);
     uint32_t notification=queues[1].notification;
     pthread_mutex_unlock(&lock);
     if(notification)win32_signal_event(notification);

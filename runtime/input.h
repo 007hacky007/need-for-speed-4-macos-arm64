@@ -8,6 +8,7 @@ void input_text(unsigned character);
 void input_paste(const uint8_t *text,unsigned count);
 void input_focus(int active);
 void input_mouse(int x,int y,int button,int down,int wheel);
+void input_mouse_motion(int dx,int dy,int width,int height);
 void input_keyboard_state(uint8_t *out);
 void input_mouse_state(void *out,unsigned size);
 unsigned input_events(int kind,InputEvent *out,unsigned count,int peek);

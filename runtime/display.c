@@ -5,8 +5,10 @@ DisplayRect display_fit(unsigned w,unsigned h,double vw,double vh){
     double scale=fmin(vw/w,vh/h),width=w*scale,height=h*scale;
     return (DisplayRect){(vw-width)/2,(vh-height)/2,width,height};
 }
-void display_mouse(unsigned w,unsigned h,double vw,double vh,double px,double py,int *x,int *y){
-    *x=*y=0;if(!w||!h||vw<=0||vh<=0)return;
-    *x=(int)fmax(0,fmin(w-1,floor(px*w/vw)));
-    *y=(int)fmax(0,fmin(h-1,floor(py*h/vh)));
+/* Converts host pointer motion in view points to whole game pixels, keeping
+   the fraction so slow trackpad motion is not lost. */
+int display_motion(double delta,double pixels_per_point,double *remainder){
+    if(!(pixels_per_point>0)||!isfinite(delta))return 0;
+    double total=*remainder+delta*pixels_per_point,whole=trunc(total);
+    *remainder=total-whole;return (int)whole;
 }
