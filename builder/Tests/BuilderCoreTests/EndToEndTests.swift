@@ -162,7 +162,7 @@ final class EndToEndTests: XCTestCase {
         XCTAssertEqual(try buildGameTrees(workspace), [], "the cancelled build's prepared game was discarded")
         mark("nothing left from the cancelled build")
 
-        // 5. The full build, timed per step, with the peak disk use sampled every 5 s.
+        // 5. The full build, timed per step, with the peak disk use sampled every second.
         var stepTimes: [(String, Date)] = []
         let full = try run(.build(paths: paths, version: version, game: game, community: community), timeout: 7200) { event, _ in
             if case let .step(id, _) = event { stepTimes.append((id, Date())) }
@@ -184,7 +184,7 @@ final class EndToEndTests: XCTestCase {
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         let app = try installApp(built, into: destination, isRunning: { false })
         let peak = sampler.stop()
-        print("E2E peak disk use of support + cache + destination: \(peak / 1024) MB (community: \(community))")
+        print("E2E peak disk use of support + cache + destination: \(peak / 1024) MB (community: \(community), \(sampler.samples) samples)")
         print("E2E app size: \(Self.kilobytes(app) / 1024) MB")
         XCTAssertEqual(app.lastPathComponent, "NFSIV.app")
         errno = 0
@@ -354,12 +354,14 @@ final class EndToEndTests: XCTestCase {
     }
 }
 
-/// Samples the summed `du` size of some folders every 5 s on a background thread.
+/// Samples the summed `du` size of some folders every second on a background thread (the
+/// community step's temporary addons-work-* folders live only for a few seconds).
 private final class DiskSampler {
     private let folders: [URL]
     private let lock = NSLock()
     private var peak: Int64 = 0
     private var running = true
+    private(set) var samples = 0
 
     init(folders: [URL]) { self.folders = folders }
 
@@ -369,10 +371,11 @@ private final class DiskSampler {
                 let size = folders.reduce(Int64(0)) { $0 + EndToEndTests.kilobytes($1) }
                 lock.lock()
                 peak = max(peak, size)
+                samples += 1
                 let more = running
                 lock.unlock()
                 if !more { return }
-                Thread.sleep(forTimeInterval: 5)
+                Thread.sleep(forTimeInterval: 1)
             }
         }
     }
