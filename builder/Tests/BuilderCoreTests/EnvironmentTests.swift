@@ -145,6 +145,20 @@ final class EnvironmentTests: XCTestCase {
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: tmp.path).sorted(), ["1.0", "notes", "python"])
     }
 
+    func testKilledRunLeftoversInTheWorkspaceAreSwept() throws {
+        let ws = tmp.appendingPathComponent("1.0")
+        for name in ["local/.check-abc/disc/DATA/x", "local/build-game/game-old/Game/x", "local/build-game/game-new/build.json",
+                     "local/keep.txt", "local/build-game/notes.txt", "tools/build_app.py", "out/NFSIV.app/x"] {
+            try write("x", to: ws.appendingPathComponent(name))
+        }
+        sweepWorkspaceLeftovers(ws)
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: ws.appendingPathComponent("local").path).sorted(), ["build-game", "keep.txt"])
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: ws.appendingPathComponent("local/build-game").path), ["notes.txt"])
+        XCTAssertTrue(fm.fileExists(atPath: ws.appendingPathComponent("tools/build_app.py").path))
+        XCTAssertTrue(fm.fileExists(atPath: ws.appendingPathComponent("out/NFSIV.app/x").path))
+        sweepWorkspaceLeftovers(tmp.appendingPathComponent("missing"))
+    }
+
     func testMoveToTrashRenamesToHiddenSibling() throws {
         let dir = tmp.appendingPathComponent("1.0")
         try write("x", to: dir.appendingPathComponent("tools/a.py"))

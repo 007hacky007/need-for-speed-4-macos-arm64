@@ -85,6 +85,21 @@ public func sweepLeftovers(_ paths: BuilderPaths) {
     }
 }
 
+/// Deletes what a killed game check or build left in a workspace: `local/.check-*` (disc
+/// images extracted for a check) and `local/build-game/game-*` (a prepared game that
+/// --discard-intermediates could not remove). The workspace belongs to the Builder alone, so
+/// nothing else writes there. Called on start, before any pipeline command runs.
+public func sweepWorkspaceLeftovers(_ workspace: URL) {
+    let fm = FileManager.default
+    let local = workspace.appendingPathComponent("local")
+    let games = local.appendingPathComponent("build-game")
+    for (folder, prefix) in [(local, ".check-"), (games, "game-")] {
+        for name in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] where name.hasPrefix(prefix) {
+            try? fm.removeItem(at: folder.appendingPathComponent(name))
+        }
+    }
+}
+
 private func removePycache(in root: URL) throws {
     let fm = FileManager.default
     guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: nil) else { return }

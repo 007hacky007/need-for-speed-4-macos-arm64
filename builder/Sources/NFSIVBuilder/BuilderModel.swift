@@ -366,6 +366,8 @@ final class BuilderModel: ObservableObject {
                 try prepareWorkspace(sources: sources, destination: paths.workspace(version: version), version: version)
             }
             if sweep, case .success = result {
+                // Synchronous: no game check or build may start while this runs.
+                sweepWorkspaceLeftovers(paths.workspace(version: version))
                 DispatchQueue.global(qos: .utility).async { removeOldWorkspaces(paths, keeping: version) }
             }
             DispatchQueue.main.async { [self] in
