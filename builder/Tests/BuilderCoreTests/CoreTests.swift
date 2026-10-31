@@ -63,6 +63,9 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(text.contains("Your copy: 1327 files, 546100000 bytes, SHA-256 abc"))
         XCTAssertTrue(text.contains(SupportedRelease.otherRegions))
         XCTAssertFalse(release.plainText(detected: nil).contains("Your copy"))
+        XCTAssertEqual(sizeText(766), "766 bytes")
+        XCTAssertTrue(sizeText(547_813_845).hasSuffix(" (\(Int64(547_813_845).formatted()) bytes)"))
+        XCTAssertTrue(sizeText(547_813_845).hasPrefix(ByteCountFormatter.string(fromByteCount: 547_813_845, countStyle: .file)))
         let broken = #"NFSIV-EVENT {"supported": {"release": "x"}}"#
         XCTAssertEqual(parsePipelineLine(broken), .log(broken))
     }

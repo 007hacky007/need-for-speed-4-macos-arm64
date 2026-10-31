@@ -60,7 +60,5 @@ struct SupportedSheet: View {
         .padding(.leading, 12)
     }
 
-    private func size(_ bytes: Int64) -> String {
-        "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) (\(bytes.formatted()) bytes)"
-    }
+    private func size(_ bytes: Int64) -> String { sizeText(bytes) }
 }

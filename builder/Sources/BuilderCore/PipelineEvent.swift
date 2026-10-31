@@ -48,6 +48,13 @@ public struct SupportedRelease: Codable, Equatable {
     }
 }
 
+/// A size for the "Which copy works?" sheet: "547.8 MB (547,813,845 bytes)", or just
+/// "766 bytes" below 1 KB, where the rounded and the exact value would read the same.
+public func sizeText(_ bytes: Int64) -> String {
+    let rounded = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    return bytes < 1000 ? rounded : "\(rounded) (\(bytes.formatted()) bytes)"
+}
+
 /// Why the pipeline refused a game copy, in one plain sentence.
 public struct GameRejection: Equatable {
     public let reason: String
