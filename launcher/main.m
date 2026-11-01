@@ -38,10 +38,131 @@ static void removeStalePrepared(NSURL *support){
  else fprintf(stderr,"Cannot remove the old prepared game copies in %s: %s\n",prepared.path.fileSystemRepresentation,error.localizedDescription.UTF8String);
 }
 
+/* --- Update check -----------------------------------------------------------
+ * New features come only with a new NFSIV Builder, so the launcher of an app the Builder
+ * stamped (NFSBuilderVersion) asks GitHub at most once a day, in the background, whether a
+ * newer Builder is out, and offers its page and disk image in the browser. It never downloads
+ * or runs anything itself. With "Check for updates" off it makes no request at all. */
+static NSString *const UpdateReleaseURL=@"https://api.github.com/repos/007hacky007/need-for-speed-4-macos-arm64/releases/latest";
+static NSString *const UpdatePagePrefix=@"https://github.com/007hacky007/need-for-speed-4-macos-arm64/";
+static NSString *const UpdateDiskImage=@"NFSIV-Builder.dmg";
+static const NSTimeInterval UpdateInterval=24*60*60;
+/* Numeric compare per dot-separated component ("0.10.0" > "0.9.1"); missing components are 0. */
+static NSComparisonResult compareVersions(NSString *a,NSString *b){
+ NSArray<NSString *> *x=[a componentsSeparatedByString:@"."],*y=[b componentsSeparatedByString:@"."];
+ for(NSUInteger i=0;i<MAX(x.count,y.count);i++){
+  long long p=i<x.count?x[i].longLongValue:0,q=i<y.count?y[i].longLongValue:0;
+  if(p!=q)return p<q?NSOrderedAscending:NSOrderedDescending;
+ }
+ return NSOrderedSame;
+}
+static BOOL plainVersion(NSString *value){
+ if(![value isKindOfClass:NSString.class]||!value.length||value.length>32)return NO;
+ NSCharacterSet *allowed=[NSCharacterSet characterSetWithCharactersInString:@"0123456789."];
+ return [value rangeOfCharacterFromSet:allowed.invertedSet].location==NSNotFound;
+}
+/* The release the GitHub API describes, if it is newer than `stamp`:
+ * {version, page, download}; nil for anything else. */
+static NSDictionary *newerRelease(NSData *data,NSString *stamp){
+ NSDictionary *release=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+ if(![release isKindOfClass:NSDictionary.class])return nil;
+ NSString *tag=release[@"tag_name"],*page=release[@"html_url"];
+ if(![tag isKindOfClass:NSString.class]||![page isKindOfClass:NSString.class]||![page hasPrefix:UpdatePagePrefix])return nil;
+ NSString *version=[tag hasPrefix:@"v"]?[tag substringFromIndex:1]:tag;
+ if(!plainVersion(version)||!plainVersion(stamp)||compareVersions(version,stamp)!=NSOrderedDescending)return nil;
+ NSString *download=page;
+ NSArray *assets=[release[@"assets"] isKindOfClass:NSArray.class]?release[@"assets"]:@[];
+ for(NSDictionary *asset in assets){
+  if(![asset isKindOfClass:NSDictionary.class]||![asset[@"name"] isEqual:UpdateDiskImage])continue;
+  NSString *url=asset[@"browser_download_url"];
+  if([url isKindOfClass:NSString.class]&&[url hasPrefix:UpdatePagePrefix])download=url;
+ }
+ return @{@"version":version,@"page":page,@"download":download};
+}
+typedef void (^UpdateFetcher)(NSURLRequest *request,void (^done)(NSData *data));
+@interface UpdateChecker : NSObject
+@property NSUserDefaults *settings;
+@property NSString *stamp;
+@property(copy) UpdateFetcher fetcher;
+@property(copy) NSDate *(^now)(void);
+@end
+@implementation UpdateChecker
+- (instancetype)init{
+ if(!(self=[super init]))return nil;
+ self.settings=NSUserDefaults.standardUserDefaults;self.now=^{return NSDate.date;};
+ self.fetcher=^(NSURLRequest *request,void (^done)(NSData *)){
+  NSURLSessionConfiguration *configuration=NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  configuration.timeoutIntervalForRequest=5;configuration.timeoutIntervalForResource=5;
+  configuration.HTTPShouldSetCookies=NO;configuration.HTTPCookieAcceptPolicy=NSHTTPCookieAcceptPolicyNever;
+  configuration.URLCache=nil;configuration.requestCachePolicy=NSURLRequestReloadIgnoringLocalCacheData;
+  NSURLSession *session=[NSURLSession sessionWithConfiguration:configuration];
+  [[session dataTaskWithRequest:request completionHandler:^(NSData *data,NSURLResponse *response,NSError *error){
+   BOOL ok=!error&&[response isKindOfClass:NSHTTPURLResponse.class]&&((NSHTTPURLResponse *)response).statusCode==200;
+   done(ok?data:nil);
+  }] resume];
+  [session finishTasksAndInvalidate];
+ };
+ return self;
+}
+- (NSURLRequest *)request{
+ NSMutableURLRequest *request=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:UpdateReleaseURL] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:5];
+ request.HTTPMethod=@"GET";request.HTTPShouldHandleCookies=NO;
+ [request setValue:@"NFSIV-Launcher" forHTTPHeaderField:@"User-Agent"];
+ [request setValue:@"application/vnd.github+json" forHTTPHeaderField:@"Accept"];
+ [request setValue:@"en" forHTTPHeaderField:@"Accept-Language"];
+ return request;
+}
+/* -> whether a request was started; `found` gets a newer release on the main queue. Failures are silent. */
+- (BOOL)checkThen:(void (^)(NSDictionary *release))found{
+ if(![self.settings boolForKey:@"CheckForUpdates"]||!plainVersion(self.stamp))return NO;
+ NSTimeInterval now=self.now().timeIntervalSince1970,last=[self.settings doubleForKey:@"LastUpdateCheck"];
+ if(last>0&&now>=last&&now-last<UpdateInterval)return NO;
+ [self.settings setDouble:now forKey:@"LastUpdateCheck"];
+ NSString *stamp=self.stamp;
+ self.fetcher([self request],^(NSData *data){
+  NSDictionary *release=newerRelease(data,stamp);
+  if(release)dispatch_async(dispatch_get_main_queue(),^{found(release);});
+ });
+ return YES;
+}
+@end
+/* "NFSIV Builder X.Y.Z is available" with What's new, Download and Not now; hidden until then. */
+@interface UpdateNotice : NSObject
+@property NSStackView *view;
+@property NSTextField *text;
+@property NSDictionary *offer;
+@property NSUserDefaults *settings;
+@property(copy) void (^open)(NSURL *url);
+@end
+@implementation UpdateNotice
+- (instancetype)initWithSettings:(NSUserDefaults *)settings{
+ if(!(self=[super init]))return nil;
+ self.settings=settings;self.open=^(NSURL *url){[NSWorkspace.sharedWorkspace openURL:url];};
+ self.text=[NSTextField labelWithString:@""];self.text.font=[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold];
+ NSButton *news=[NSButton buttonWithTitle:@"What's new" target:self action:@selector(whatsNew:)];
+ NSButton *download=[NSButton buttonWithTitle:@"Download" target:self action:@selector(download:)];
+ NSButton *later=[NSButton buttonWithTitle:@"Not now" target:self action:@selector(notNow:)];
+ for(NSButton *button in @[news,download,later])button.controlSize=NSControlSizeSmall;
+ self.view=[NSStackView stackViewWithViews:@[self.text,news,download,later]];self.view.spacing=8;self.view.hidden=YES;
+ return self;
+}
+- (void)show:(NSDictionary *)release{
+ NSString *dismissed=[self.settings stringForKey:@"DismissedUpdate"];
+ if(plainVersion(dismissed)&&compareVersions(release[@"version"],dismissed)!=NSOrderedDescending)return;
+ self.offer=release;self.text.stringValue=[NSString stringWithFormat:@"NFSIV Builder %@ is available",release[@"version"]];
+ self.view.hidden=NO;
+}
+- (void)whatsNew:(id)sender{(void)sender;if(self.offer)self.open([NSURL URLWithString:self.offer[@"page"]]);}
+- (void)download:(id)sender{(void)sender;if(self.offer)self.open([NSURL URLWithString:self.offer[@"download"]]);}
+- (void)notNow:(id)sender{(void)sender;if(self.offer)[self.settings setObject:self.offer[@"version"] forKey:@"DismissedUpdate"];self.view.hidden=YES;}
+@end
+
 @interface Launcher : NSObject <NSApplicationDelegate,NSWindowDelegate>
 @property NSWindow *window;
 @property NSPopUpButton *resolution,*renderer,*content;
-@property NSButton *fullscreen,*audio,*movies,*silent,*depth,*playButton;
+@property NSButton *fullscreen,*audio,*movies,*silent,*depth,*updates,*playButton;
+@property UpdateChecker *checker;
+@property UpdateNotice *notice;
 @property NSTextField *status;
 @property NSURL *resources,*support,*logs,*selectedSave;
 @property NSArray<NSDictionary *> *profiles;
@@ -80,8 +201,8 @@ static void removeStalePrepared(NSURL *support){
  if(invalid){alert(@"The community content catalog is invalid. Rebuild the app to prepare it again.");[NSApp terminate:nil];return;}
  self.profiles=profiles;
  NSUserDefaults *settings=NSUserDefaults.standardUserDefaults;
- [settings registerDefaults:@{@"Resolution":@"1280x960",@"Renderer":@"vulkan",@"Fullscreen":@YES,@"Audio":@YES,@"Movies":@YES,@"SilentPatch":@YES,@"DepthFix":@YES,@"Content":@"original"}];
- self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,580) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
+ [settings registerDefaults:@{@"Resolution":@"1280x960",@"Renderer":@"vulkan",@"Fullscreen":@YES,@"Audio":@YES,@"Movies":@YES,@"SilentPatch":@YES,@"DepthFix":@YES,@"Content":@"original",@"CheckForUpdates":@YES}];
+ self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,620) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
  self.window.title=@"NFSIV";self.window.delegate=self;self.window.releasedWhenClosed=NO;
  NSStackView *stack=[NSStackView new];stack.orientation=NSUserInterfaceLayoutOrientationVertical;stack.alignment=NSLayoutAttributeLeading;stack.spacing=12;stack.translatesAutoresizingMaskIntoConstraints=NO;
  [self.window.contentView addSubview:stack];
@@ -101,13 +222,30 @@ static void removeStalePrepared(NSURL *support){
  self.silent=check(@"SilentPatch input fixes",[settings boolForKey:@"SilentPatch"]);self.depth=check(@"Projected headlights depth correction",[settings boolForKey:@"DepthFix"]);
  for(NSButton *button in @[self.fullscreen,self.audio,self.movies,self.silent,self.depth])[stack addArrangedSubview:button];
  NSTextField *note=label(@"Modern Patch 0.1.0 is required. Music and effects volume\ncan be adjusted in the game's Audio menu.");note.font=[NSFont systemFontOfSize:11];note.textColor=NSColor.secondaryLabelColor;[stack addArrangedSubview:note];
+ NSString *stamp=NSBundle.mainBundle.infoDictionary[@"NFSBuilderVersion"];
+ self.updates=check(@"Check for updates",[settings boolForKey:@"CheckForUpdates"]);self.updates.target=self;self.updates.action=@selector(toggleUpdates:);
+ NSTextField *updateNote=label(stamp?@"Once a day the launcher asks GitHub whether a newer NFSIV Builder is out.\nOff means no network request.":@"This app was built from Terminal: updates come from building it again.");
+ updateNote.font=[NSFont systemFontOfSize:11];updateNote.textColor=NSColor.secondaryLabelColor;self.updates.enabled=stamp!=nil;
+ [stack addArrangedSubview:self.updates];[stack addArrangedSubview:updateNote];
+ self.notice=[[UpdateNotice alloc] initWithSettings:settings];[stack addArrangedSubview:self.notice.view];
+ self.checker=[UpdateChecker new];self.checker.stamp=stamp;
  self.status=label(@"Ready");self.status.font=[NSFont systemFontOfSize:11];[stack addArrangedSubview:self.status];
  self.playButton=[NSButton buttonWithTitle:@"Play" target:self action:@selector(play:)];self.playButton.keyEquivalent=@"\r";
  NSButton *saves=[NSButton buttonWithTitle:@"Open Saves" target:self action:@selector(openSaves:)];NSButton *logs=[NSButton buttonWithTitle:@"Open Logs" target:self action:@selector(openLogs:)];
  NSStackView *buttons=[NSStackView stackViewWithViews:@[self.playButton,saves,logs]];buttons.spacing=10;[stack addArrangedSubview:buttons];
  NSMenu *menu=[NSMenu new];NSMenuItem *app=[NSMenuItem new];[menu addItem:app];NSMenu *appMenu=[NSMenu new];app.submenu=appMenu;[appMenu addItemWithTitle:@"Quit NFSIV" action:@selector(terminate:) keyEquivalent:@"q"];NSApp.mainMenu=menu;
  [self.window center];[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];
+ [self checkForUpdates];
  if([NSProcessInfo.processInfo.arguments containsObject:@"--play"])[self play:nil];
+}
+- (void)checkForUpdates{
+ __weak UpdateNotice *notice=self.notice;
+ [self.checker checkThen:^(NSDictionary *release){[notice show:release];}];
+}
+- (void)toggleUpdates:(id)sender{
+ (void)sender;BOOL on=self.updates.state==NSControlStateValueOn;
+ [NSUserDefaults.standardUserDefaults setBool:on forKey:@"CheckForUpdates"];
+ if(on)[self checkForUpdates];else self.notice.view.hidden=YES;
 }
 - (void)play:(id)sender{
  (void)sender;if(self.game)return;
