@@ -12,9 +12,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 try:
-    from .game_source import leave_out, path_in
+    from .game_source import clone, leave_out, path_in
 except ImportError:
-    from game_source import leave_out, path_in
+    from game_source import clone, leave_out, path_in
 
 
 def child(folder, name):
@@ -74,11 +74,9 @@ def content_catalog(addons):
 
 
 def copy_tree(source, destination):
-    """APFS clones (cp -c) of a payload tree on the same volume, else a plain copy."""
-    if subprocess.run(['/bin/cp', '-c', '-R', str(source), str(destination)],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
-        shutil.rmtree(destination, ignore_errors=True)
-        shutil.copytree(source, destination)
+    """APFS clones (cp -c) of a payload tree on the same volume, else a copy keeping the
+    quarantine of each file (game_source.clone())."""
+    clone(source, destination)
     for junk in [*destination.rglob('.DS_Store'), *destination.rglob('._*')]:
         junk.unlink()
 

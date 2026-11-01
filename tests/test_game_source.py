@@ -1,7 +1,9 @@
 import contextlib
 import hashlib
 import json
+import os
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +11,15 @@ from unittest.mock import patch
 
 from tools import game_source
 from tests.test_disc import image
+
+
+def xattr(flag, value, path, name='com.apple.quarantine'):
+    subprocess.run(['/usr/bin/xattr', flag, name, value, str(path)], check=True)
+
+
+def quarantine_of(path, name='com.apple.quarantine'):
+    result = subprocess.run(['/usr/bin/xattr', '-p', name, str(path)], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 class GameSourceTests(unittest.TestCase):
@@ -255,6 +266,64 @@ class GameSourceTests(unittest.TestCase):
                 game_source.extract_source(source, destination)
                 self.assertEqual((destination / 'Simulation/cop356_german.crp').read_bytes(), b'asset')
                 self.assertEqual(source.read_bytes(), original)
+
+    def test_files_extracted_from_a_quarantined_image_keep_its_quarantine(self):
+        """A disc image from a download is quarantined; the files written from it get the same
+        quarantine (that of the .bin a .cue names, else of the .cue)."""
+        mark = '0081;00000000;Test;'
+        for raw, suffix, marked in ((False, '.iso', '.iso'), (True, '.cue', '.bin'), (True, '.cue', '.cue')):
+            with self.subTest(suffix=suffix, marked=marked):
+                folder = self.root / f'download {suffix} {marked}'
+                folder.mkdir()
+                source = folder / ('disc' + suffix)
+                if raw:
+                    (folder / 'disc.bin').write_bytes(image(raw=True))
+                    source.write_text('FILE "disc.bin" BINARY\nTRACK 1 MODE1/2352\nINDEX 1 00:00:00\n')
+                else:
+                    source.write_bytes(image(raw=False))
+                xattr('-w', mark, folder / ('disc' + marked))
+                destination = folder / 'extracted'
+                game_source.extract_source(source, destination)
+                for path in (destination, destination / 'Simulation', destination / 'Simulation/cop356_german.crp'):
+                    self.assertEqual(quarantine_of(path), mark, path)
+
+    def test_a_copy_that_cannot_clone_keeps_the_quarantine_or_fails(self):
+        """Without APFS clones the copy (cp -p) would get a rewritten quarantine and shutil none:
+        each copied item gets the exact one of the original, links stay links."""
+        mark = '0081;00000000;Test;'
+        source = self.root / 'copy'
+        (source / 'DIRECTX/SUB').mkdir(parents=True)
+        (source / 'DIRECTX/SUB/DXSETUP.EXE').write_bytes(b'directx')
+        (source / 'DIRECTX/plain.txt').write_bytes(b'not quarantined')
+        (source / 'DIRECTX/link').symlink_to('/usr/bin/true')
+        (source / 'SETUP.EXE').write_bytes(b'setup')
+        for path in (source / 'DIRECTX', source / 'DIRECTX/SUB', source / 'DIRECTX/SUB/DXSETUP.EXE',
+                     source / 'SETUP.EXE'):
+            xattr('-w', mark, path)
+        xattr('-w', 'kept', source / 'SETUP.EXE', name='org.example.other')
+        run = subprocess.run
+
+        def no_clones(args, **kwargs):
+            if args[:2] == ['/bin/cp', '-c']:
+                return subprocess.CompletedProcess(args, 1)
+            return run(args, **kwargs)
+        out = self.root / 'out'
+        out.mkdir()
+        with patch.object(game_source.subprocess, 'run', side_effect=no_clones) as runs:
+            game_source.clone(source / 'DIRECTX', out / 'DIRECTX')
+            game_source.clone(source / 'SETUP.EXE', out / 'SETUP.EXE')
+        self.assertIn(['/bin/cp', '-Rp', str(source / 'DIRECTX'), str(out / 'DIRECTX')],
+                      [c.args[0] for c in runs.call_args_list])
+        for path in ('DIRECTX', 'DIRECTX/SUB', 'DIRECTX/SUB/DXSETUP.EXE', 'SETUP.EXE'):
+            self.assertEqual(quarantine_of(out / path), mark, path)
+        self.assertIsNone(quarantine_of(out / 'DIRECTX/plain.txt'))
+        self.assertEqual(quarantine_of(out / 'SETUP.EXE', 'org.example.other'), 'kept')
+        self.assertEqual(os.readlink(out / 'DIRECTX/link'), '/usr/bin/true')
+        # Fail closed: a quarantine that cannot be put back stops the copy.
+        with patch.object(game_source.subprocess, 'run', side_effect=no_clones), \
+                patch.object(game_source, 'set_quarantine', side_effect=OSError(1, 'refused')):
+            with self.assertRaises(OSError):
+                game_source.clone(source / 'SETUP.EXE', out / 'again.exe')
 
     def test_ccd_requires_single_unscrambled_mode1_track(self):
         source = self.root / 'disc file.ccd'

@@ -1,11 +1,13 @@
 """Verify the supported retail assets before preparing a private VEG overlay."""
 import configparser
+import ctypes
 import hashlib
 import json
 import os
 from pathlib import Path
 import plistlib
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -182,20 +184,64 @@ def tree_inventory(folder):
     return {'files': len(files), 'bytes': size, 'sha256': aggregate.hexdigest()}
 
 
-MACOS_BUNDLES = ('.app', '.framework', '.bundle', '.plugin', '.kext', '.pkg', '.mpkg', '.workflow')
-MACOS_FILES = ('.command', '.tool', '.sh', '.dylib', '.so', '.scpt')
+# macOS code that never goes into NFSIV.app from the player's copy (names compared casefolded).
+# Bundles: folders with these extensions or with a Contents/Info.plist, left out whole.
+MACOS_BUNDLES = ('.app', '.appex', '.framework', '.bundle', '.plugin', '.kext', '.pkg', '.mpkg', '.workflow',
+                 '.action', '.xpc', '.prefpane', '.saver', '.qlgenerator', '.mdimporter', '.scptd', '.wdgt',
+                 '.component', '.systemextension')
+# Files: scripts, libraries and launchers by extension, and any file that starts like a script
+# ("#!") or a Mach-O binary, whatever its name.
+MACOS_FILES = ('.command', '.tool', '.sh', '.bash', '.zsh', '.csh', '.ksh', '.fish', '.py', '.pl', '.rb', '.php',
+               '.scpt', '.applescript', '.terminal', '.dylib', '.so', '.jar')
 MACH_O = {bytes.fromhex(magic) for magic in ('feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca')}
 
 
-def leave_out(folder, skip=('data', 'savedata')):
-    """Removes from `folder` (a game with files copied from the player's copy) what never goes
-    into NFSIV.app: Finder files, symbolic links (codesign refuses links that leave the app) and
-    macOS code. The game is Windows files only, and a Mac program hidden in a downloaded copy must
-    not end up inside a signed app. Windows files stay. The top-level names in `skip` (the retail
-    assets, checked against PREPARED) are not looked at. Returns the removed paths."""
-    folder, removed = Path(folder), []
+def macos_code(path):
+    """True when `path` (a folder or a regular file, not a link) is macOS code by the rules above."""
+    path = Path(path)
+    name = path.name.casefold()
+    if path.is_dir():
+        return name.endswith(MACOS_BUNDLES) or os.path.lexists(path / 'Contents' / 'Info.plist')
+    if name.endswith(MACOS_FILES):
+        return True
+    with path.open('rb') as f:
+        head = f.read(4)
+    return head[:2] == b'#!' or head in MACH_O
 
-    def remove(path, why):
+
+def left_out(folder, skip=('data', 'savedata')):
+    """What never goes into NFSIV.app from `folder` (a game with files copied from the player's
+    copy), as (path, why) pairs: Finder files, symbolic links (codesign refuses links that leave
+    the app) and macOS code. The game is Windows files only, and a Mac program hidden in a
+    downloaded copy must not end up inside a signed app. Windows files stay. The top-level names
+    in `skip` (the retail assets, checked against PREPARED) are not looked at. Only reads."""
+    folder = Path(folder)
+
+    def scan(path):
+        if path.is_symlink():
+            yield path, 'symbolic link'
+        elif metadata(path.name):
+            yield path, 'Finder file'
+        elif path.is_dir():
+            if macos_code(path):
+                yield path, 'macOS code'
+            else:
+                for item in sorted(path.iterdir()):
+                    yield from scan(item)
+        elif path.is_file() and macos_code(path):
+            yield path, 'macOS code'
+
+    for item in sorted(folder.iterdir()):
+        if item.name.casefold() not in skip:
+            yield from scan(item)
+
+
+def leave_out(folder, skip=('data', 'savedata')):
+    """Removes what left_out() finds from `folder`, logging each item, and takes the execute
+    permission off every file left (the game only reads them; the port's own programs are in
+    Contents/MacOS, not here). Returns the removed paths."""
+    folder, removed = Path(folder), []
+    for path, why in list(left_out(folder, skip)):
         relative = path.relative_to(folder).as_posix()
         print(f'left out of the app ({why}): {relative}', flush=True)
         removed.append(relative)
@@ -203,30 +249,86 @@ def leave_out(folder, skip=('data', 'savedata')):
             shutil.rmtree(path)
         else:
             path.unlink()
-
-    def scan(path):
-        name = path.name.casefold()
-        if path.is_symlink():
-            remove(path, 'symbolic link')
-        elif metadata(path.name):
-            remove(path, 'Finder file')
-        elif path.is_dir():
-            if name.endswith(MACOS_BUNDLES):
-                remove(path, 'macOS code')
-            else:
-                for item in sorted(path.iterdir()):
-                    scan(item)
-        elif name.endswith(MACOS_FILES):
-            remove(path, 'macOS code')
-        elif path.is_file():
-            with path.open('rb') as f:
-                if f.read(4) in MACH_O:
-                    remove(path, 'macOS code')
-
-    for item in sorted(folder.iterdir()):
-        if item.name.casefold() not in skip:
-            scan(item)
+    for directory, _, names in os.walk(folder):
+        for name in names:
+            path = os.path.join(directory, name)
+            mode = os.lstat(path).st_mode
+            if stat.S_ISREG(mode) and mode & 0o111:
+                os.chmod(path, stat.S_IMODE(mode) & ~0o111)
     return removed
+
+
+# com.apple.quarantine of the files copied from the player's copy stays on them in the app (only
+# what the build made loses it). Python has no xattr calls on macOS, so libc's are used.
+QUARANTINE = b'com.apple.quarantine'
+_XATTR_NOFOLLOW = 0x0001
+_ENOATTR = 93
+_libc = ctypes.CDLL(None, use_errno=True) if sys.platform == 'darwin' else None
+if _libc:
+    _libc.getxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                               ctypes.c_uint32, ctypes.c_int]
+    _libc.getxattr.restype = ctypes.c_ssize_t
+    _libc.setxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                               ctypes.c_uint32, ctypes.c_int]
+    _libc.setxattr.restype = ctypes.c_int
+
+
+def quarantine(path):
+    """The com.apple.quarantine value of `path` (a link itself, not followed), or None."""
+    if not _libc:
+        return None
+    name = os.fsencode(path)
+    size = _libc.getxattr(name, QUARANTINE, None, 0, 0, _XATTR_NOFOLLOW)
+    if size >= 0:
+        buffer = ctypes.create_string_buffer(size)
+        size = _libc.getxattr(name, QUARANTINE, buffer, size, 0, _XATTR_NOFOLLOW)
+        if size >= 0:
+            return buffer.raw[:size]
+    error = ctypes.get_errno()
+    if error == _ENOATTR:
+        return None
+    raise OSError(error, f'cannot read the quarantine of {path}: {os.strerror(error)}')
+
+
+def set_quarantine(path, value):
+    """Sets com.apple.quarantine of `path` (not following a link) to `value`; raises if it can't."""
+    if _libc and _libc.setxattr(os.fsencode(path), QUARANTINE, value, len(value), 0, _XATTR_NOFOLLOW) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, f'cannot keep the quarantine on {path}: {os.strerror(error)}')
+
+
+def keep_quarantine(source, destination):
+    """Gives each folder and file of the copy `destination` the exact quarantine its counterpart
+    in `source` has (copies other than APFS clones drop or rewrite it). Fails rather than leave
+    a quarantined file of the player's copy without its quarantine."""
+    source, destination = Path(source), Path(destination)
+    pairs = [(source, destination)]
+    if source.is_dir() and not source.is_symlink():
+        for directory, names, files in os.walk(source):
+            relative = Path(directory).relative_to(source)
+            pairs.extend((Path(directory) / name, destination / relative / name) for name in names + files)
+    for original, copy in pairs:
+        if original.is_symlink():
+            continue
+        value = quarantine(original)
+        if value is not None and quarantine(copy) != value:
+            set_quarantine(copy, value)
+
+
+def quarantine_tree(folder, value):
+    """Puts `value` on `folder` and everything in it (files extracted from a quarantined image)."""
+    set_quarantine(folder, value)
+    for directory, names, files in os.walk(folder):
+        for name in names + files:
+            path = os.path.join(directory, name)
+            if not os.path.islink(path):
+                set_quarantine(path, value)
+
+
+def copy_file(source, destination):
+    """shutil.copy2, with the source's exact quarantine kept."""
+    shutil.copy2(source, destination)
+    keep_quarantine(source, destination)
 
 
 def path_in(folder, *parts):
@@ -279,13 +381,25 @@ def resolve_image(source):
 
 
 def extract_source(source, destination):
+    """Extracts the player's disc image. The files are written anew, so they get the image's
+    quarantine (that of the image file read, else of the file chosen, such as the .cue)."""
     image = resolve_image(source)
     try:
         with Disc(image) as disc:
-            return disc.extract(destination)
+            entries = disc.extract(destination)
+            value = quarantine(disc.path)
     except DiscError as error:
         print(f'Disc image error: {error}', file=sys.stderr, flush=True)
         raise SourceRejected(error.reason) from error
+    if value is None:
+        value = quarantine(source)
+    if value is not None:
+        try:
+            quarantine_tree(destination, value)
+        except BaseException:
+            shutil.rmtree(destination)
+            raise
+    return entries
 
 
 def is_app(path):
@@ -344,19 +458,25 @@ def verify_bundle(app):
 
 
 def clone(source, destination):
-    """APFS clone (cp -c) when source and destination share a volume, else a plain copy."""
+    """APFS clone (cp -c) when source and destination share a volume, else a copy with cp -p,
+    which keeps the extended attributes but rewrites a quarantine; keep_quarantine() then makes
+    sure each copied item has its exact one (or fails). Links are copied as links."""
     source, destination = Path(source), Path(destination)
-    if subprocess.run(['/bin/cp', '-c', '-R' if source.is_dir() else '-p', str(source), str(destination)],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+    if source.is_symlink():
+        destination.symlink_to(os.readlink(source))
         return
-    if destination.is_dir():
-        shutil.rmtree(destination)
-    elif destination.exists():
-        destination.unlink()
-    if source.is_dir():
-        shutil.copytree(source, destination, symlinks=True)
-    else:
-        shutil.copy2(source, destination)
+    flag = '-R' if source.is_dir() else '-p'
+    if subprocess.run(['/bin/cp', '-c', flag, str(source), str(destination)],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        elif destination.exists() or destination.is_symlink():
+            destination.unlink()
+        result = subprocess.run(['/bin/cp', '-Rp' if flag == '-R' else '-p', str(source), str(destination)],
+                                capture_output=True, text=True)
+        if result.returncode:
+            raise OSError(f'could not copy {source}: {result.stderr.strip()}')
+    keep_quarantine(source, destination)
 
 
 def reuse_bundle(app, destination):
@@ -404,7 +524,7 @@ def copy_assets(source, destination):
         if path.is_dir():
             copy_assets(path, target)
         elif path.is_file():
-            shutil.copy2(path, target)
+            copy_file(path, target)
         else:
             raise ValueError(f'unsupported game file: {path}')
 
@@ -432,7 +552,7 @@ def prepare_game(source, veg_archive, extractor, destination):
         try:
             for name in ('data', 'savedata'):
                 copy_assets(child(source, name), destination / name)
-            shutil.copy2(child(source, 'NFSHS.ICO'), destination / 'nfshs.ico')
+            copy_file(child(source, 'NFSHS.ICO'), destination / 'nfshs.ico')
             # The rest of the copy goes in as it is (APFS clones, so a download's quarantine
             # stays), less what leave_out() removes; VEG's executable and sound module replace
             # the retail ones.

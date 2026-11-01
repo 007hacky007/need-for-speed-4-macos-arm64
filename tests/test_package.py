@@ -42,13 +42,16 @@ class PackageTests(unittest.TestCase):
         bitmap += b'\0\0\xff\xff' * 1024 + bytes(128)
         return struct.pack('<HHHBBBBHHII', 0, 1, 1, 32, 32, 0, 0, 1, 32, len(bitmap), 22) + bitmap
 
-    def package(self, root, game, runtime, **options):
-        """package_app with clang and lipo stubbed; copying, xattr and codesign run for real."""
+    def package(self, root, game, runtime, clones=True, **options):
+        """package_app with clang and lipo stubbed; copying, xattr and codesign run for real.
+        clones=False makes every cp -c fail, as on a volume without APFS clones."""
         run = subprocess.run
         def command(args, **kwargs):
             if args[0] == 'clang':
                 shutil.copy('/usr/bin/true', args[args.index('-o') + 1])
                 return subprocess.CompletedProcess(args, 0)
+            if not clones and args[:2] == ['/bin/cp', '-c']:
+                return subprocess.CompletedProcess(args, 1)
             return run(args, **kwargs)
         with patch.object(package, 'ROOT', root), \
                 patch.object(package.subprocess, 'run', side_effect=command), \
@@ -79,28 +82,42 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(struct.unpack_from('>I', data, 4)[0], len(data))
 
     def test_no_macos_code_from_the_copy_and_its_quarantine_stays(self):
-        """A downloaded copy may hide a Mac program: it never goes into the app, and the files
-        copied from the copy keep the download's quarantine (only what the build made loses it)."""
+        """A downloaded copy may hide a Mac program: it never goes into the app, no file from the
+        copy can be run, and the files copied from the copy keep the download's quarantine (only
+        what the build made loses it), with APFS clones and without."""
+        for clones in (True, False):
+            with self.subTest(clones=clones):
+                self.check_copy_from_a_download(clones)
+
+    def check_copy_from_a_download(self, clones):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             copy = root / 'Repack'
             (copy / 'DATA').mkdir(parents=True)
             (copy / 'SAVEDATA').mkdir()
             (copy / 'DATA/file').write_bytes(b'asset')
+            (copy / 'DATA/file').chmod(0o755)
             (copy / 'SAVEDATA/save').write_bytes(b'save')
             (copy / 'NFSHS.ICO').write_bytes(self.icon())
             (copy / 'DIRECTX').mkdir()
             (copy / 'DIRECTX/DXSETUP.EXE').write_bytes(b'MZ windows extra')
+            (copy / 'DIRECTX/DXSETUP.EXE').chmod(0o755)
             shutil.copy('/usr/bin/true', copy / 'README.TXT')                      # a Mach-O under another name
+            (copy / 'readme.dat').write_text('#!/bin/sh\necho hidden\n')       # a script under another name
             (copy / 'Tool.app/Contents/MacOS').mkdir(parents=True)
             shutil.copy('/usr/bin/true', copy / 'Tool.app/Contents/MacOS/Tool')
+            (copy / 'Helper/Contents').mkdir(parents=True)                         # a bundle without an extension
+            (copy / 'Helper/Contents/Info.plist').write_text('<plist/>')
+            (copy / 'Helper/Contents/data.bin').write_bytes(b'payload')
             (copy / 'SETUPDIR').mkdir()
             (copy / 'SETUPDIR/run.command').write_text('#!/bin/sh\n')
+            (copy / 'SETUPDIR/Tool.JAR').write_bytes(b'PK\x03\x04')
+            (copy / 'SETUPDIR/open.terminal').write_text('<plist/>')
             (copy / 'SETUPDIR/SETUP.INI').write_text('[setup]\n')
             (copy / 'link').symlink_to('/usr/bin')
             mark = '0081;00000000;Test;'
-            subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', mark, str(copy / 'DIRECTX/DXSETUP.EXE')],
-                           check=True)
+            for path in ('DIRECTX', 'DIRECTX/DXSETUP.EXE', 'DATA/file'):
+                subprocess.run(['/usr/bin/xattr', '-w', 'com.apple.quarantine', mark, str(copy / path)], check=True)
             subprocess.run(['/usr/bin/xattr', '-wx', 'com.apple.FinderInfo', '00' * 31 + '01',
                             str(copy / 'SETUPDIR/SETUP.INI')], check=True)
             veg = root / 'veg'
@@ -111,23 +128,32 @@ class PackageTests(unittest.TestCase):
             (veg / 'eacsnd.dll').write_bytes(b'sound')
             prepared = root / 'prepared/Game'
             sha = lambda data: hashlib.sha256(data).hexdigest()
+            run = subprocess.run
+            def no_clones(args, **kwargs):
+                if not clones and args[:2] == ['/bin/cp', '-c']:
+                    return subprocess.CompletedProcess(args, 1)
+                return run(args, **kwargs)
             with patch.object(game_source, 'SOURCE', game_source.inventory(copy)), \
                     patch.object(game_source, 'ICON_SHA', sha(self.icon())), \
                     patch.object(game_source, 'ICON_SIZE', len(self.icon())), \
                     patch.object(game_source, 'GAME_SHA', sha(b'game')), \
                     patch.object(game_source, 'SOUND_SHA', sha(b'sound')), \
+                    patch.object(game_source.subprocess, 'run', side_effect=no_clones), \
                     patch.object(game_source, 'extract_7z', lambda _, target, __: shutil.copytree(veg, target)):
                 game_source.prepare_game(copy, root / 'veg.7z', root / '7zz', prepared)
             game, runtime = self.make_inputs(root, prepared)
-            app = self.package(root, game, runtime)
+            app = self.package(root, game, runtime, clones=clones)
             bundled = app / 'Contents/Resources/Game'
             self.assertEqual(sorted(p.relative_to(bundled).as_posix() for p in bundled.rglob('*')
                                     if p.is_file() or p.is_symlink()),
                              ['DIRECTX/DXSETUP.EXE', 'SETUPDIR/SETUP.INI', 'data/file', 'drivers/dx7/thrash.ini',
                               'eacsnd.dll', 'game-files.json', 'nfs4.exe', 'nfs4.ini', 'nfshs.ico', 'savedata/save'])
-            quarantine = subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine',
-                                         str(bundled / 'DIRECTX/DXSETUP.EXE')], capture_output=True, text=True)
-            self.assertEqual(quarantine.stdout.strip(), mark, 'game data keeps its quarantine')
+            self.assertEqual([p.relative_to(bundled).as_posix() for p in bundled.rglob('*')
+                              if p.is_file() and p.stat().st_mode & 0o111], [], 'no file of the game can be run')
+            for path in ('DIRECTX', 'DIRECTX/DXSETUP.EXE', 'data/file'):
+                quarantine = subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(bundled / path)],
+                                            capture_output=True, text=True)
+                self.assertEqual(quarantine.stdout.strip(), mark, f'game data keeps its quarantine: {path}')
             subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True,
                            capture_output=True)
             with patch.object(game_source, 'PREPARED', game_source.inventory(bundled)), \
