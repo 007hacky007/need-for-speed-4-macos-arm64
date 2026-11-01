@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import json
 import plistlib
 import tempfile
 import unittest
@@ -154,7 +155,7 @@ class GameSourceTests(unittest.TestCase):
                          (supported['icon']['bytes'], supported['icon']['sha256']))
         self.assertEqual(set(game_source.MESSAGES), {
             'missing', 'link', 'unsupported-type', 'ccd-image', 'cue-image', 'image-layout', 'unreadable',
-            'not-game', 'assets', 'icon-missing', 'icon', 'not-app', 'bundle'})
+            'not-game', 'assets', 'icon-missing', 'icon', 'not-app', 'bundle', 'old-app'})
         for text in [*game_source.MESSAGES.values(), *(v for v in supported.values() if isinstance(v, str))]:
             self.assertFalse(any(ord(c) > 127 for c in text), text)
 
@@ -204,6 +205,10 @@ class GameSourceTests(unittest.TestCase):
         (overlay / 'drivers/dx7/thrash.ini').write_text('[THRASH]\nFile=dx7a.dll\n')
         (overlay / 'nfs4.exe').write_bytes(b'game')
         (overlay / 'eacsnd.dll').write_bytes(b'sound')
+        (source / 'SETUP.EXE').write_bytes(b'windows installer')
+        (source / 'DIRECTX').mkdir()
+        (source / 'DIRECTX/DXSETUP.EXE').write_bytes(b'directx')
+        (source / 'EACSND.DLL').write_bytes(b'retail sound')
         destination = self.root / 'new game'
         def extract(_, target, __):
             import shutil
@@ -223,6 +228,14 @@ class GameSourceTests(unittest.TestCase):
         self.assertEqual((source / 'DATA/file').read_bytes(), b'asset')
         self.assertEqual((destination / 'nfshs.ico').read_bytes(), (source / 'NFSHS.ICO').read_bytes())
         self.assertFalse((source / 'nfs4.ini').exists())
+        # The whole copy goes in; VEG's sound module replaces the retail one.
+        self.assertEqual((destination / 'SETUP.EXE').read_bytes(), b'windows installer')
+        self.assertEqual((destination / 'DIRECTX/DXSETUP.EXE').read_bytes(), b'directx')
+        self.assertEqual([p.name for p in destination.iterdir() if p.name.casefold() == 'eacsnd.dll'], ['eacsnd.dll'])
+        self.assertEqual((destination / 'eacsnd.dll').read_bytes(), b'sound')
+        record = json.loads((destination / game_source.RECORD).read_text())
+        self.assertEqual(record, game_source.tree_inventory(destination))
+        self.assertEqual(record['files'], 7)  # data, savedata, icon, nfs4.exe, eacsnd.dll and the two extras
         with self.assertRaises(FileExistsError):
             game_source.prepare_game(source, self.root / 'veg.7z', self.root / '7zz', destination)
 
@@ -278,7 +291,7 @@ class BundleReuseTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def app(self, stamp='0.1.0', icon=True):
+    def app(self, stamp='0.1.0', record=True):
         app = self.root / 'Old' / 'NFSIV.app'
         game = app / 'Contents/Resources/Game'
         (game / 'data/cars/base').mkdir(parents=True)
@@ -289,8 +302,11 @@ class BundleReuseTests(unittest.TestCase):
         (game / 'eacsnd.dll').write_bytes(b'sound')
         (game / 'drivers/dx7').mkdir(parents=True)
         (game / 'drivers/dx7/thrash.ini').write_text('[THRASH]\n')
-        if icon:
-            (game / 'nfshs.ico').write_bytes(b'retail icon')
+        (game / 'nfshs.ico').write_bytes(b'retail icon')
+        (game / 'DIRECTX').mkdir()
+        (game / 'DIRECTX/DXSETUP.EXE').write_bytes(b'windows extra')
+        if record:
+            (game / game_source.RECORD).write_text(json.dumps(game_source.tree_inventory(game)))
         (app / 'Contents/Resources/NFSIV.icns').write_bytes(b'icns converted')
         info = {'CFBundleIdentifier': 'org.classicgames.nfsiv'}
         if stamp:
@@ -328,17 +344,41 @@ class BundleReuseTests(unittest.TestCase):
             self.assertEqual(game_source.reuse_bundle(app, destination), verified)
         self.assertEqual((destination / 'data/cars/base/car.viv').read_bytes(), b'prepared car')
         self.assertEqual((destination / 'nfshs.ico').read_bytes(), b'retail icon')
+        self.assertEqual((destination / 'DIRECTX/DXSETUP.EXE').read_bytes(), b'windows extra')
         self.assertFalse((destination / 'NFSIV.icns').exists())
+        game = app / 'Contents/Resources/Game'
+        self.assertEqual({k for k in self.snapshot(destination)}, {k for k in self.snapshot(game)})
         self.assertEqual(self.snapshot(app.parent), before)
 
-    def test_app_without_the_icon_reuses_its_converted_icon(self):
-        app = self.app(stamp=None, icon=False)
+    def test_no_file_of_the_game_is_ignored(self):
+        """A missing or changed extra, or the icon, is found like a retail asset."""
+        for index, name in enumerate(('DIRECTX/DXSETUP.EXE', 'nfshs.ico')):
+            for change in ('missing', 'changed'):
+                with self.subTest(name=name, change=change):
+                    app = self.app()
+                    with contextlib.ExitStack() as stack:
+                        for item in self.pinned(app):
+                            stack.enter_context(item)
+                        path = app / 'Contents/Resources/Game' / name
+                        path.unlink() if change == 'missing' else path.write_bytes(b'changed')
+                        with self.assertRaises(game_source.SourceRejected) as caught:
+                            game_source.verify_bundle(app)
+                        self.assertEqual(caught.exception.reason, 'bundle')
+                    import shutil
+                    shutil.rmtree(app.parent)
+
+    def test_app_from_a_builder_that_left_the_extras_out_is_not_reused(self):
+        app = self.app(stamp=None, record=False)
         with contextlib.ExitStack() as stack:
             for item in self.pinned(app):
                 stack.enter_context(item)
-            self.assertIsNone(game_source.verify_bundle(app)[1])
-            game_source.reuse_bundle(app, self.root / 'work/Game')
-        self.assertEqual((self.root / 'work/Game/NFSIV.icns').read_bytes()[:4], b'icns')
+            with self.assertRaises(game_source.SourceRejected) as caught:
+                game_source.verify_bundle(app)
+            self.assertEqual(caught.exception.reason, 'old-app')
+            self.assertIn('original game copy', str(caught.exception))
+            with self.assertRaises(game_source.SourceRejected):
+                game_source.reuse_bundle(app, self.root / 'work/Game')
+        self.assertFalse((self.root / 'work/Game').exists())
 
     def test_modified_or_foreign_app_asks_for_the_original_copy(self):
         app = self.app()

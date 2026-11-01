@@ -1,6 +1,8 @@
 """Verify the supported retail assets before preparing a private VEG overlay."""
 import configparser
 import hashlib
+import json
+import os
 from pathlib import Path
 import plistlib
 import shutil
@@ -36,10 +38,19 @@ ICON_SIZE = SUPPORTED['icon']['bytes']
 ICON_SHA = SUPPORTED['icon']['sha256']
 # What prepare_game makes of the accepted copy with the pinned VEG patch: the retail DATA and
 # SAVEDATA with VEG's five 4.50 menu files on top, measured like SOURCE. A built NFSIV.app
-# carries exactly this tree in Contents/Resources/Game, so an update can reuse it in place of
+# carries this tree in Contents/Resources/Game, so an update can reuse it in place of
 # the original copy (whose replaced menu files the app no longer has) when it still matches.
 PREPARED = {'files': 1328, 'bytes': 547816751,
             'sha256': '279fe27b1ed88301fabd27649ab9a22aaa0d33c3b7cfe01d0ec6b6e70203f814'}
+# Beside them the app carries everything else of the player's copy (the Windows-only extras such
+# as the installer, DirectX and the 3dfx drivers), which differs from copy to copy. prepare_game
+# records the inventory of the whole prepared game in RECORD, so an update finds a missing or
+# changed file anywhere. Only RECORD itself and the two settings files packaging writes anew
+# are not in it.
+RECORD = 'game-files.json'
+WRITTEN = (RECORD, 'nfs4.ini', 'drivers/dx7/thrash.ini')
+# Copied or replaced on their own: the retail assets and icon, and what VEG and the port supply.
+OWN = ('data', 'savedata', 'nfshs.ico', 'nfs4.exe', 'eacsnd.dll', 'nfs4.ini')
 BUNDLE_ID = 'org.classicgames.nfsiv'
 MESSAGES = {
     'missing': 'The game copy was not found. Choose it again.',
@@ -58,6 +69,8 @@ MESSAGES = {
     'icon': 'NFSHS.ICO does not match the retail disc icon. Copy it again from the root of the game disc.',
     'not-app': 'This app is not an NFSIV.app built by NFSIV Builder. Choose NFSIV.app or your game copy.',
     'bundle': 'The game inside this NFSIV.app is missing or was changed. Choose your original game copy.',
+    'old-app': 'This NFSIV.app was built by an older NFSIV Builder, which left part of your game copy out of it. '
+               'Choose your original game copy once to build the complete app.',
 }
 
 
@@ -145,6 +158,88 @@ def inventory(folder):
     return {'files': len(files), 'bytes': size, 'sha256': aggregate.hexdigest()}
 
 
+def tree_inventory(folder):
+    """inventory() of every file in a prepared game, less WRITTEN."""
+    folder = Path(folder)
+    files, size = [], 0
+    for directory, names, filenames in os.walk(folder):
+        names[:] = [n for n in names if not metadata(n)]
+        for name in names + filenames:
+            path = Path(directory) / name
+            if metadata(name):
+                continue
+            if path.is_symlink():
+                raise SourceRejected('link')
+            key = path.relative_to(folder).as_posix().casefold()
+            if path.is_file() and key not in WRITTEN:
+                files.append((key, path))
+                size += path.stat().st_size
+            elif not path.is_file() and not path.is_dir():
+                raise ValueError(f'unsupported game file: {key}')
+    aggregate = hashlib.sha256()
+    for name, path in sorted(files):
+        aggregate.update(name.encode('utf-8') + b'\0' + bytes.fromhex(digest(path)))
+    return {'files': len(files), 'bytes': size, 'sha256': aggregate.hexdigest()}
+
+
+MACOS_BUNDLES = ('.app', '.framework', '.bundle', '.plugin', '.kext', '.pkg', '.mpkg', '.workflow')
+MACOS_FILES = ('.command', '.tool', '.sh', '.dylib', '.so', '.scpt')
+MACH_O = {bytes.fromhex(magic) for magic in ('feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca')}
+
+
+def leave_out(folder, skip=('data', 'savedata')):
+    """Removes from `folder` (a game with files copied from the player's copy) what never goes
+    into NFSIV.app: Finder files, symbolic links (codesign refuses links that leave the app) and
+    macOS code. The game is Windows files only, and a Mac program hidden in a downloaded copy must
+    not end up inside a signed app. Windows files stay. The top-level names in `skip` (the retail
+    assets, checked against PREPARED) are not looked at. Returns the removed paths."""
+    folder, removed = Path(folder), []
+
+    def remove(path, why):
+        relative = path.relative_to(folder).as_posix()
+        print(f'left out of the app ({why}): {relative}', flush=True)
+        removed.append(relative)
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    def scan(path):
+        name = path.name.casefold()
+        if path.is_symlink():
+            remove(path, 'symbolic link')
+        elif metadata(path.name):
+            remove(path, 'Finder file')
+        elif path.is_dir():
+            if name.endswith(MACOS_BUNDLES):
+                remove(path, 'macOS code')
+            else:
+                for item in sorted(path.iterdir()):
+                    scan(item)
+        elif name.endswith(MACOS_FILES):
+            remove(path, 'macOS code')
+        elif path.is_file():
+            with path.open('rb') as f:
+                if f.read(4) in MACH_O:
+                    remove(path, 'macOS code')
+
+    for item in sorted(folder.iterdir()):
+        if item.name.casefold() not in skip:
+            scan(item)
+    return removed
+
+
+def path_in(folder, *parts):
+    """folder/parts with each existing part matched case-insensitively, the folders made."""
+    path = Path(folder)
+    for index, part in enumerate(parts):
+        matches = [p for p in path.iterdir() if p.name.casefold() == part.casefold()] if path.is_dir() else []
+        path = matches[0] if len(matches) == 1 else path / part
+        if index < len(parts) - 1:
+            path.mkdir(exist_ok=True)
+    return path
+
+
 def verify_source(folder):
     actual = inventory(folder)
     if actual != SOURCE:
@@ -225,6 +320,16 @@ def check_prepared(game):
         raise SourceRejected('bundle') from error
     if actual != PREPARED:
         raise SourceRejected('bundle', detected=actual)
+    record = Path(game) / RECORD
+    if not record.is_file() or record.is_symlink():
+        raise SourceRejected('old-app')
+    try:
+        if json.loads(record.read_text()) != tree_inventory(game):
+            raise SourceRejected('bundle')
+    except (OSError, ValueError) as error:
+        if isinstance(error, SourceRejected):
+            raise
+        raise SourceRejected('bundle') from error
     return actual
 
 
@@ -257,10 +362,8 @@ def clone(source, destination):
 def reuse_bundle(app, destination):
     """Prepare `destination` from the game an existing NFSIV.app carries, for an update.
 
-    The old app is only read: its files are cloned, and the clone, not the original, is what
-    gets verified and used, so a change to the old app meanwhile cannot slip in. The icon is
-    the bundled NFSHS.ICO when the app has it, else (apps from before it was kept) the
-    converted NFSIV.icns."""
+    The old app is only read: its whole game is cloned, and the clone, not the original, is
+    what gets verified and used, so a change to the old app meanwhile cannot slip in."""
     app, destination = Path(app), Path(destination)
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(destination)
@@ -271,23 +374,17 @@ def reuse_bundle(app, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.mkdir()
     try:
-        for name in ('data', 'savedata', 'nfs4.exe', 'eacsnd.dll'):
-            try:
-                source = child(game, name)
-            except ValueError as error:
-                raise SourceRejected('bundle') from error
-            clone(source, destination / name.casefold())
+        for path in sorted(game.iterdir()):
+            if not metadata(path.name):
+                clone(path, destination / path.name)
         verified = check_prepared(destination)
-        icon = [p for p in game.iterdir() if p.name.casefold() == 'nfshs.ico']
-        if len(icon) == 1 and icon[0].is_file() and not icon[0].is_symlink():
-            clone(icon[0], destination / 'nfshs.ico')
-            if digest(destination / 'nfshs.ico') != ICON_SHA:
+        try:
+            if digest(child(destination, 'nfshs.ico')) != ICON_SHA:
                 raise SourceRejected('bundle')
-        else:
-            converted = app / 'Contents/Resources/NFSIV.icns'
-            if converted.is_symlink() or not converted.is_file() or converted.read_bytes()[:4] != b'icns':
-                raise SourceRejected('bundle')
-            clone(converted, destination / 'NFSIV.icns')
+        except ValueError as error:
+            if isinstance(error, SourceRejected):
+                raise
+            raise SourceRejected('bundle') from error
         # The driver and nfs4.ini files are written again when the app is packaged.
     except BaseException:
         shutil.rmtree(destination)
@@ -336,14 +433,21 @@ def prepare_game(source, veg_archive, extractor, destination):
             for name in ('data', 'savedata'):
                 copy_assets(child(source, name), destination / name)
             shutil.copy2(child(source, 'NFSHS.ICO'), destination / 'nfshs.ico')
-            # Copy only assets the native runtime uses; Windows driver DLLs are unnecessary.
+            # The rest of the copy goes in as it is (APFS clones, so a download's quarantine
+            # stays), less what leave_out() removes; VEG's executable and sound module replace
+            # the retail ones.
+            for path in sorted(source.iterdir()):
+                if not metadata(path.name) and path.name.casefold() not in OWN:
+                    clone(path, destination / path.name)
+            leave_out(destination)
+            # Of VEG, only what the native runtime uses; its Windows driver DLLs are unnecessary.
             for name in ('nfs4.exe', 'eacsnd.dll'):
                 shutil.copy2(child(overlay, name), destination / name)
             copy_assets(child(overlay, 'data'), destination / 'data')
-            driver = destination / 'drivers/dx7'
-            driver.mkdir(parents=True)
-            shutil.copy2(child(child(child(overlay, 'drivers'), 'dx7'), 'thrash.ini'), driver / 'thrash.ini')
+            shutil.copy2(child(child(child(overlay, 'drivers'), 'dx7'), 'thrash.ini'),
+                         path_in(destination, 'drivers', 'dx7', 'thrash.ini'))
             (destination / 'nfs4.ini').write_text(INI)
+            (destination / RECORD).write_text(json.dumps(tree_inventory(destination), indent=2) + '\n')
         except BaseException:
             shutil.rmtree(destination)
             raise

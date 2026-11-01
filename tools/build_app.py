@@ -239,7 +239,8 @@ def build(args):
             work = Path(temporary)
             # An existing NFSIV.app no longer holds the five retail menu files VEG replaced, so
             # the original copy cannot be rebuilt from it. Its game is reused instead when it is
-            # exactly what prepare_game makes from the accepted copy (PREPARED); otherwise the
+            # exactly what prepare_game made from the accepted copy (PREPARED and the inventory of
+            # every file it recorded, RECORD); otherwise the
             # update needs the original copy again. The old app is only read.
             update = is_app(source)
             if update:

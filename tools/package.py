@@ -11,6 +11,10 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+try:
+    from .game_source import leave_out, path_in
+except ImportError:
+    from game_source import leave_out, path_in
 
 
 def child(folder, name):
@@ -90,33 +94,28 @@ def package_app(game_folder, addons=None, output=None, moltenvk=None, builder_ve
         binaries, resources, frameworks = [contents / name for name in ('MacOS', 'Resources', 'Frameworks')]
         for folder in (binaries, resources, frameworks):
             folder.mkdir(parents=True)
-        icons = [p for p in game_folder.iterdir() if p.name.casefold() == 'nfshs.ico']
-        converted = game_folder / 'NFSIV.icns'
-        if not icons and converted.is_file() and not converted.is_symlink():
-            # An update from an app built before the icon was kept: its conversion is reused.
-            shutil.copy2(converted, resources / 'NFSIV.icns')
-        else:
-            subprocess.run(['/usr/bin/sips', '-s', 'format', 'icns', str(child(game_folder, 'NFSHS.ICO')),
-                            '--out', str(resources / 'NFSIV.icns')], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(['/usr/bin/sips', '-s', 'format', 'icns', str(child(game_folder, 'NFSHS.ICO')),
+                        '--out', str(resources / 'NFSIV.icns')], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['clang', '-arch', 'arm64', '-mmacosx-version-min=11.0', '-O2', '-fobjc-arc',
                         '-I' + str(ROOT / 'gen/all'), str(ROOT / 'launcher/main.m'),
                         '-framework', 'Cocoa', '-o', str(binaries / 'NFSIVLauncher')], check=True)
         shutil.copy2(ROOT / 'out/nfsiv', binaries / 'NFSIVEngine')
         shutil.copy2(ROOT / 'out/linked.exe', resources / 'linked.exe')
+        # The whole prepared game goes in: the retail assets with VEG's files, the icon (kept so
+        # that a later update can reuse this app's game) and the Windows-only extras of the
+        # player's copy. Only Finder files, links and macOS code stay out (leave_out()).
+        for name in ('data', 'savedata', 'nfs4.exe', 'eacsnd.dll'):
+            child(game_folder, name)
+        payload_files(game_folder)
         destination = resources / 'Game'
-        destination.mkdir()
-        for name in ('data', 'savedata'):
-            source = child(game_folder, name)
-            payload_files(source)
-            copy_tree(source, destination / name)
-        for name in ('nfs4.exe', 'eacsnd.dll'):
-            shutil.copy2(child(game_folder, name), destination / name)
-        if icons:
-            # Kept so that a later update can reuse this app's game, icon included.
-            shutil.copy2(child(game_folder, 'NFSHS.ICO'), destination / 'nfshs.ico')
-        driver = destination / 'drivers/dx7'
-        driver.mkdir(parents=True)
-        (driver / 'thrash.ini').write_text('[THRASH]\nFile=dx7a.dll\nType=d3d\nFogSupport=1\nDirectDrawLagFix=1\n')
+        copy_tree(game_folder, destination)
+        leave_out(destination)  # already done when the game was prepared
+        # codesign --strict refuses Finder info and resource forks inside a bundle. The other
+        # attributes stay, so a download's quarantine stays on the files copied from it.
+        for name in ('com.apple.FinderInfo', 'com.apple.ResourceFork'):
+            subprocess.run(['/usr/bin/xattr', '-dr', name, str(destination)], capture_output=True)
+        path_in(destination, 'drivers', 'dx7', 'thrash.ini').write_text(
+            '[THRASH]\nFile=dx7a.dll\nType=d3d\nFogSupport=1\nDirectDrawLagFix=1\n')
         (destination / 'nfs4.ini').write_text('[NFS4]\nLanguage=english\nNoMovies=0\nThrashDriver=dx7\nSingleProcAffinity=0\nOwnHeapLimitMb=64\nNoErrorReporting=0\nVariant=0\n')
         if addons:
             catalog = content_catalog(addons)
