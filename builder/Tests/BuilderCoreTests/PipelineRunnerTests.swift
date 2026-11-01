@@ -289,7 +289,8 @@ final class PipelineRunnerTests: XCTestCase {
              ["tools/builder_cli.py", "downloads", "fetch", "--community", "--cache", c]),
             (.supported(paths: paths, version: "1.2.0"), ["tools/builder_cli.py", "supported"]),
             (.build(paths: paths, version: "1.2.0", game: game, community: false),
-             ["tools/build_app.py", "--progress", "--cache", c, "--discard-intermediates", "--", game.path]),
+             ["tools/build_app.py", "--progress", "--cache", c, "--discard-intermediates", "--builder-version", "1.2.0",
+              "--", game.path]),
         ]
         for (runner, arguments) in expected {
             XCTAssertEqual(runner.executable, paths.pythonExecutable)
@@ -304,6 +305,6 @@ final class PipelineRunnerTests: XCTestCase {
         let game = URL(fileURLWithPath: "/g/-NFS.ccd")
         XCTAssertEqual(PipelineRunner.build(paths: paths, version: "1", game: game, community: true).arguments,
                        ["-B", "tools/build_app.py", "--progress", "--cache", "/c", "--discard-intermediates",
-                        "--community", "--", "/g/-NFS.ccd"])
+                        "--builder-version", "1", "--community", "--", "/g/-NFS.ccd"])
     }
 }

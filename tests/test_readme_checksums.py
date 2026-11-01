@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from tools.game_source import SUPPORTED
+from tools.game_source import PREPARED, SUPPORTED
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,6 +16,10 @@ class ReadmeChecksumTests(unittest.TestCase):
         icon = next(line for line in lines if line.startswith('| User-supplied Windows icon'))
         self.assertIn(f"| {SUPPORTED['icon']['bytes']} |", icon)
         self.assertIn(f"`{SUPPORTED['icon']['sha256']}`", icon)
+        prepared = next(line for line in lines if line.startswith('| Prepared game inside a built NFSIV.app'))
+        self.assertIn(f"All {PREPARED['files']:,} files", prepared)
+        self.assertIn(f"{PREPARED['bytes']:,} total", prepared)
+        self.assertIn(f"`{PREPARED['sha256']}`", prepared)
 
 
 if __name__ == '__main__':

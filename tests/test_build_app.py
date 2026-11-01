@@ -101,6 +101,43 @@ class BuildAppTests(unittest.TestCase):
             self.assertEqual(package.call_args.kwargs['moltenvk'], root / 'MoltenVK')
 
 
+    def test_update_from_an_existing_app_reuses_its_game_and_stamps_the_version(self):
+        with tempfile.TemporaryDirectory(prefix='build app ') as temporary:
+            root = Path(temporary)
+            old = root / 'Applications/NFSIV.app'
+            (old / 'Contents').mkdir(parents=True)
+            options = argparse.Namespace(game_source=old, cache=root / 'cache', output=root / 'out/NFSIV.app',
+                                         community=False, prepare_only=False, builder_version='0.2.0')
+            dependencies = (root / '7zz', None, root / 'MoltenVK', root / 'glslang')
+
+            def reuse(app, destination):
+                destination.mkdir(parents=True)
+                return {'sha256': 'prepared'}
+            stdout = io.StringIO()
+            with patch.object(build_app, 'ROOT', root), patch.object(build_app, 'PROGRESS', True), \
+                    patch.object(build_app, 'bootstrap', return_value=root / 'private python'), \
+                    patch.object(build_app, 'dependencies', return_value=dependencies) as fetched, \
+                    patch.object(build_app, 'verify_bundle', return_value=({'sha256': 'prepared'}, '0.1.0')), \
+                    patch.object(build_app, 'reuse_bundle', side_effect=reuse) as reused, \
+                    patch.object(build_app, 'verify_source') as retail, \
+                    patch.object(build_app, 'extract_source') as extract, \
+                    patch.object(build_app, 'prepare_game') as prepare, \
+                    patch.object(build_app.subprocess, 'run'), \
+                    patch.object(build_app, 'package_app', return_value=options.output) as package, \
+                    contextlib.redirect_stdout(stdout):
+                self.assertEqual(build_app.build(options), options.output)
+            retail.assert_not_called()
+            extract.assert_not_called()
+            prepare.assert_not_called()
+            self.assertEqual(fetched.call_args.kwargs, {'veg': False})
+            self.assertEqual(reused.call_args.args[0], old)
+            self.assertEqual(package.call_args.kwargs['builder_version'], '0.2.0')
+            self.assertEqual(Path(package.call_args.args[0]), reused.call_args.args[1])
+            titles = [e['title'] for e in events(stdout.getvalue()) if 'step' in e]
+            self.assertIn('Reusing the prepared game from NFSIV.app', titles)
+            self.assertEqual(sorted(p.name for p in old.rglob('*')), ['Contents'])
+
+
 def quarantined(path):
     return subprocess.run(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)],
                           capture_output=True).returncode == 0

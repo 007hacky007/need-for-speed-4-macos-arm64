@@ -16,11 +16,13 @@ from urllib.parse import urlparse
 
 try:
     from .downloads import DownloadFailed, digest, extract_tar, fetch
-    from .game_source import SourceRejected, describe_rejection, extract_source, prepare_game, verify_source
+    from .game_source import (SourceRejected, describe_rejection, extract_source, is_app, prepare_game,
+                              reuse_bundle, verify_bundle, verify_source)
     from .package import package_app
 except ImportError:
     from downloads import DownloadFailed, digest, extract_tar, fetch
-    from game_source import SourceRejected, describe_rejection, extract_source, prepare_game, verify_source
+    from game_source import (SourceRejected, describe_rejection, extract_source, is_app, prepare_game,
+                             reuse_bundle, verify_bundle, verify_source)
     from package import package_app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,8 +148,9 @@ def unquarantine(path):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
 
-def dependencies(cache, python, work):
-    archives = {name: fetch(cache, *source) for name, source in SOURCES.items()}
+def dependencies(cache, python, work, veg=True):
+    """An update from an existing app has its patched game already and does not need VEG."""
+    archives = {name: fetch(cache, *source) for name, source in SOURCES.items() if veg or name != 'veg'}
     extract_tar(archives['7zip'], work / '7zip')
     unquarantine(work / '7zip')
     extractor = work / '7zip/7zz'
@@ -190,7 +193,7 @@ def dependencies(cache, python, work):
         marker.write_text(json.dumps({'source_sha256': SOURCES['glslang'][2],
                                       'binary_sha256': digest(compiler)}) + '\n')
     unquarantine(compiler)
-    return extractor, archives['veg'], moltenvk, compiler
+    return extractor, archives.get('veg'), moltenvk, compiler
 
 
 def prepare_addons(cache, extractor):
@@ -234,30 +237,46 @@ def build(args):
     try:
         with tempfile.TemporaryDirectory(prefix='.build-', dir=cache) as temporary:
             work = Path(temporary)
-            if not source.is_dir():
-                step('extract', f'Extracting {source.name}')
-                extract_source(source, work / 'disc')
-                source = work / 'disc'
-            step('verify', 'Checking the retail game files and icon')
-            verified = verify_source(source)
-            print(f'Verified retail source: {verified}', flush=True)
+            # An existing NFSIV.app no longer holds the five retail menu files VEG replaced, so
+            # the original copy cannot be rebuilt from it. Its game is reused instead when it is
+            # exactly what prepare_game makes from the accepted copy (PREPARED); otherwise the
+            # update needs the original copy again. The old app is only read.
+            update = is_app(source)
+            if update:
+                step('verify', f'Checking the game inside {source.name}')
+                verified, previous = verify_bundle(source)
+                print(f'Verified the prepared game in {source}: {verified}'
+                      + (f', built by NFSIV Builder {previous}' if previous else ''), flush=True)
+            else:
+                if not source.is_dir():
+                    step('extract', f'Extracting {source.name}')
+                    extract_source(source, work / 'disc')
+                    source = work / 'disc'
+                step('verify', 'Checking the retail game files and icon')
+                verified = verify_source(source)
+                print(f'Verified retail source: {verified}', flush=True)
             step('setup', 'Setting up the private Python packages')
             python = bootstrap(cache)
             step('dependencies', 'Fetching and checking the build dependencies')
-            extractor, veg, moltenvk, glslang = dependencies(cache, python, work)
-            step('prepare', 'Preparing the game files with VEG Modern Patch')
+            extractor, veg, moltenvk, glslang = dependencies(cache, python, work, veg=not update)
             # Every invocation gets a new tree, preserving any previous prepared saves.
             prepared_root = Path(tempfile.mkdtemp(prefix='game-', dir=prepared_parent))
             created.append(prepared_root)
             prepared = prepared_root / 'Game'
-            prepare_game(source, veg, extractor, prepared)
+            if update:
+                step('prepare', f'Reusing the prepared game from {source.name}')
+                reuse_bundle(source, prepared)
+            else:
+                step('prepare', 'Preparing the game files with VEG Modern Patch')
+                prepare_game(source, veg, extractor, prepared)
             addons = None
             if community:
                 step('community', 'Preparing community cars, tracks and traffic')
                 addons = prepare_addons(cache, extractor)
                 if addons.parent == cache and addons.name.startswith('addons-'):
                     created.append(addons)
-            metadata = {'source': verified, 'dependencies': {k: v[2] for k, v in SOURCES.items()},
+            metadata = {'source': verified, 'update_from_app': update,
+                        'dependencies': {k: v[2] for k, v in SOURCES.items()},
                         'baseline': 'EA 4.50 through verified VEG 0.1.0 executable and five matching menu files',
                         'community': bool(community)}
             (prepared.parent / 'build.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -273,7 +292,8 @@ def build(args):
             subprocess.run([str(python), '-B', str(ROOT / 'tools/compile.py')],
                            check=True, cwd=ROOT, env=env)
             step('package', 'Packaging and signing NFSIV.app')
-            return package_app(prepared, addons=addons, output=args.output, moltenvk=moltenvk)
+            return package_app(prepared, addons=addons, output=args.output, moltenvk=moltenvk,
+                               builder_version=getattr(args, 'builder_version', None))
     finally:
         if getattr(args, 'discard_intermediates', False):
             for path in created:
@@ -323,6 +343,7 @@ def main(argv=None):
     parser.add_argument('--progress', action='store_true', help='print NFSIV-EVENT JSON lines for NFSIV Builder')
     parser.add_argument('--setup-only', action='store_true',
                         help='only set up the private Python packages; GAME_SOURCE is not needed')
+    parser.add_argument('--builder-version', help="NFSIV Builder's version, stamped into the app")
     parser.add_argument('--discard-intermediates', action='store_true',
                         help="remove this build's prepared game and community files when it ends")
     try:

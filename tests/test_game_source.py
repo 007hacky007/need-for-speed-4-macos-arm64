@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import plistlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -152,7 +154,7 @@ class GameSourceTests(unittest.TestCase):
                          (supported['icon']['bytes'], supported['icon']['sha256']))
         self.assertEqual(set(game_source.MESSAGES), {
             'missing', 'link', 'unsupported-type', 'ccd-image', 'cue-image', 'image-layout', 'unreadable',
-            'not-game', 'assets', 'icon-missing', 'icon'})
+            'not-game', 'assets', 'icon-missing', 'icon', 'not-app', 'bundle'})
         for text in [*game_source.MESSAGES.values(), *(v for v in supported.values() if isinstance(v, str))]:
             self.assertFalse(any(ord(c) > 127 for c in text), text)
 
@@ -266,3 +268,96 @@ class GameSourceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class BundleReuseTests(unittest.TestCase):
+    """An update reuses the prepared game an existing NFSIV.app carries, reading it only."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='bundle reuse ')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def app(self, stamp='0.1.0', icon=True):
+        app = self.root / 'Old' / 'NFSIV.app'
+        game = app / 'Contents/Resources/Game'
+        (game / 'data/cars/base').mkdir(parents=True)
+        (game / 'savedata').mkdir()
+        (game / 'data/cars/base/car.viv').write_bytes(b'prepared car')
+        (game / 'savedata/menu.qfs').write_bytes(b'veg menu')
+        (game / 'nfs4.exe').write_bytes(b'patched game')
+        (game / 'eacsnd.dll').write_bytes(b'sound')
+        (game / 'drivers/dx7').mkdir(parents=True)
+        (game / 'drivers/dx7/thrash.ini').write_text('[THRASH]\n')
+        if icon:
+            (game / 'nfshs.ico').write_bytes(b'retail icon')
+        (app / 'Contents/Resources/NFSIV.icns').write_bytes(b'icns converted')
+        info = {'CFBundleIdentifier': 'org.classicgames.nfsiv'}
+        if stamp:
+            info['NFSBuilderVersion'] = stamp
+        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+        return app
+
+    def pinned(self, app):
+        game = app / 'Contents/Resources/Game'
+        sha = lambda name: hashlib.sha256((game / name).read_bytes()).hexdigest()
+        return [patch.object(game_source, 'PREPARED', game_source.inventory(game)),
+                patch.object(game_source, 'GAME_SHA', sha('nfs4.exe')),
+                patch.object(game_source, 'SOUND_SHA', sha('eacsnd.dll')),
+                patch.object(game_source, 'ICON_SHA', hashlib.sha256(b'retail icon').hexdigest())]
+
+    def snapshot(self, folder):
+        return {p.relative_to(folder).as_posix(): (p.read_bytes() if p.is_file() else None, p.stat().st_mtime_ns)
+                for p in sorted(folder.rglob('*'))}
+
+    def test_pinned_prepared_tree_is_what_prepare_game_makes(self):
+        self.assertEqual(game_source.PREPARED['files'], game_source.SOURCE['files'])
+        self.assertRegex(game_source.PREPARED['sha256'], '^[0-9a-f]{64}$')
+        self.assertNotEqual(game_source.PREPARED['sha256'], game_source.SOURCE['sha256'])
+
+    def test_existing_app_is_verified_and_reused_without_writing_to_it(self):
+        app = self.app()
+        before = self.snapshot(app.parent)
+        with contextlib.ExitStack() as stack:
+            for item in self.pinned(app):
+                stack.enter_context(item)
+            self.assertTrue(game_source.is_app(app))
+            verified, stamp = game_source.verify_bundle(app)
+            self.assertEqual(stamp, '0.1.0')
+            destination = self.root / 'work/Game'
+            self.assertEqual(game_source.reuse_bundle(app, destination), verified)
+        self.assertEqual((destination / 'data/cars/base/car.viv').read_bytes(), b'prepared car')
+        self.assertEqual((destination / 'nfshs.ico').read_bytes(), b'retail icon')
+        self.assertFalse((destination / 'NFSIV.icns').exists())
+        self.assertEqual(self.snapshot(app.parent), before)
+
+    def test_app_without_the_icon_reuses_its_converted_icon(self):
+        app = self.app(stamp=None, icon=False)
+        with contextlib.ExitStack() as stack:
+            for item in self.pinned(app):
+                stack.enter_context(item)
+            self.assertIsNone(game_source.verify_bundle(app)[1])
+            game_source.reuse_bundle(app, self.root / 'work/Game')
+        self.assertEqual((self.root / 'work/Game/NFSIV.icns').read_bytes()[:4], b'icns')
+
+    def test_modified_or_foreign_app_asks_for_the_original_copy(self):
+        app = self.app()
+        with contextlib.ExitStack() as stack:
+            for item in self.pinned(app):
+                stack.enter_context(item)
+            (app / 'Contents/Resources/Game/data/cars/base/car.viv').write_bytes(b'modded car')
+            with self.assertRaises(game_source.SourceRejected) as caught:
+                game_source.verify_bundle(app)
+            self.assertEqual(caught.exception.reason, 'bundle')
+            self.assertIn('original game copy', str(caught.exception))
+            with self.assertRaises(game_source.SourceRejected):
+                game_source.reuse_bundle(app, self.root / 'work/Game')
+            self.assertFalse((self.root / 'work/Game').exists())
+            (app / 'Contents/Resources/Game/nfs4.exe').unlink()
+            with self.assertRaises(game_source.SourceRejected) as caught:
+                game_source.verify_bundle(app)
+            self.assertEqual(caught.exception.reason, 'bundle')
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.example.other'}))
+            with self.assertRaises(game_source.SourceRejected) as caught:
+                game_source.verify_bundle(app)
+            self.assertEqual(caught.exception.reason, 'not-app')

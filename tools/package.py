@@ -69,7 +69,17 @@ def content_catalog(addons):
     return {'profiles': profiles}
 
 
-def package_app(game_folder, addons=None, output=None, moltenvk=None):
+def copy_tree(source, destination):
+    """APFS clones (cp -c) of a payload tree on the same volume, else a plain copy."""
+    if subprocess.run(['/bin/cp', '-c', '-R', str(source), str(destination)],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        shutil.rmtree(destination, ignore_errors=True)
+        shutil.copytree(source, destination)
+    for junk in [*destination.rglob('.DS_Store'), *destination.rglob('._*')]:
+        junk.unlink()
+
+
+def package_app(game_folder, addons=None, output=None, moltenvk=None, builder_version=None):
     game_folder = Path(game_folder).resolve()
     output = Path(output or ROOT / 'out/NFSIV.app').resolve()
     moltenvk = Path(moltenvk or os.environ.get('NFSIV_MOLTENVK', ROOT / 'local/MoltenVK/MoltenVK')).resolve()
@@ -80,8 +90,14 @@ def package_app(game_folder, addons=None, output=None, moltenvk=None):
         binaries, resources, frameworks = [contents / name for name in ('MacOS', 'Resources', 'Frameworks')]
         for folder in (binaries, resources, frameworks):
             folder.mkdir(parents=True)
-        subprocess.run(['/usr/bin/sips', '-s', 'format', 'icns', str(child(game_folder, 'NFSHS.ICO')),
-                        '--out', str(resources / 'NFSIV.icns')], check=True, stdout=subprocess.DEVNULL)
+        icons = [p for p in game_folder.iterdir() if p.name.casefold() == 'nfshs.ico']
+        converted = game_folder / 'NFSIV.icns'
+        if not icons and converted.is_file() and not converted.is_symlink():
+            # An update from an app built before the icon was kept: its conversion is reused.
+            shutil.copy2(converted, resources / 'NFSIV.icns')
+        else:
+            subprocess.run(['/usr/bin/sips', '-s', 'format', 'icns', str(child(game_folder, 'NFSHS.ICO')),
+                            '--out', str(resources / 'NFSIV.icns')], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(['clang', '-arch', 'arm64', '-mmacosx-version-min=11.0', '-O2', '-fobjc-arc',
                         '-I' + str(ROOT / 'gen/all'), str(ROOT / 'launcher/main.m'),
                         '-framework', 'Cocoa', '-o', str(binaries / 'NFSIVLauncher')], check=True)
@@ -92,16 +108,19 @@ def package_app(game_folder, addons=None, output=None, moltenvk=None):
         for name in ('data', 'savedata'):
             source = child(game_folder, name)
             payload_files(source)
-            shutil.copytree(source, destination / name, ignore=shutil.ignore_patterns('.DS_Store', '._*'))
+            copy_tree(source, destination / name)
         for name in ('nfs4.exe', 'eacsnd.dll'):
             shutil.copy2(child(game_folder, name), destination / name)
+        if icons:
+            # Kept so that a later update can reuse this app's game, icon included.
+            shutil.copy2(child(game_folder, 'NFSHS.ICO'), destination / 'nfshs.ico')
         driver = destination / 'drivers/dx7'
         driver.mkdir(parents=True)
         (driver / 'thrash.ini').write_text('[THRASH]\nFile=dx7a.dll\nType=d3d\nFogSupport=1\nDirectDrawLagFix=1\n')
         (destination / 'nfs4.ini').write_text('[NFS4]\nLanguage=english\nNoMovies=0\nThrashDriver=dx7\nSingleProcAffinity=0\nOwnHeapLimitMb=64\nNoErrorReporting=0\nVariant=0\n')
         if addons:
             catalog = content_catalog(addons)
-            shutil.copytree(addons, resources / 'Addons', ignore=shutil.ignore_patterns('.DS_Store', '._*'))
+            copy_tree(Path(addons), resources / 'Addons')
             (resources / 'Addons/catalog.json').write_text(json.dumps(catalog, indent=2) + '\n')
         runtime = moltenvk / 'dynamic/dylib/macOS/libMoltenVK.dylib'
         target = frameworks / 'libMoltenVK.dylib'
@@ -121,6 +140,9 @@ def package_app(game_folder, addons=None, output=None, moltenvk=None):
                 'CFBundleShortVersionString': '0.1.0', 'CFBundleVersion': '1',
                 'LSMinimumSystemVersion': '11.0', 'NSHighResolutionCapable': True,
                 'LSMultipleInstancesProhibited': True}
+        if builder_version:
+            # Lets the launcher offer newer Builder releases and the Builder show "old -> new".
+            info['NFSBuilderVersion'] = str(builder_version)
         (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
         for binary in (target, binaries / 'NFSIVEngine', binaries / 'NFSIVLauncher'):
             subprocess.run(['codesign', '--force', '--sign', '-', '--timestamp=none', str(binary)], check=True)

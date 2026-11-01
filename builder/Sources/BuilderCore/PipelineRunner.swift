@@ -88,9 +88,11 @@ public final class PipelineRunner {
     }
 
     /// The build. Its prepared game and community files are removed when it ends; the output
-    /// is out/NFSIV.app inside the workspace, never a folder the user chose.
+    /// is out/NFSIV.app inside the workspace, never a folder the user chose. `game` may be an
+    /// existing NFSIV.app (an update), which is only read. The app is stamped with `version`.
     public static func build(paths: BuilderPaths, version: String, game: URL, community: Bool) -> PipelineRunner {
-        python(paths, version, ["tools/build_app.py", "--progress", "--cache", paths.cache.path, "--discard-intermediates"]
+        python(paths, version, ["tools/build_app.py", "--progress", "--cache", paths.cache.path, "--discard-intermediates",
+                                "--builder-version", version]
             + (community ? ["--community"] : []) + ["--", game.path])
     }
 

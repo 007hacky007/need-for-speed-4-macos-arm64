@@ -36,7 +36,7 @@ class PackageTests(unittest.TestCase):
             (runtime.parent / 'LICENSE').write_text('fixture notice')
             run = subprocess.run
             def command(args, **kwargs):
-                if args[0] == '/usr/bin/sips':
+                if args[0] in ('/usr/bin/sips', '/bin/cp'):
                     return run(args, **kwargs)
                 if args[0] == 'clang':
                     Path(args[args.index('-o') + 1]).write_bytes(b'synthetic launcher')
@@ -44,13 +44,26 @@ class PackageTests(unittest.TestCase):
             with patch.object(package, 'ROOT', root), \
                     patch.object(package.subprocess, 'run', side_effect=command), \
                     patch.object(package.subprocess, 'check_output', return_value='arm64'):
-                app = package.package_app(game, moltenvk=runtime)
+                app = package.package_app(game, moltenvk=runtime, builder_version='0.2.0')
             info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+            self.assertEqual(info['NFSBuilderVersion'], '0.2.0')
+            self.assertEqual((app / 'Contents/Resources/Game/nfshs.ico').read_bytes(), icon)
+            self.assertTrue((app / 'Contents/Resources/Game/data').is_dir())
+            # An update from an app built before the icon was kept reuses its converted icon.
+            (game / 'NFSHS.ICO').unlink()
+            (game / 'NFSIV.icns').write_bytes(b'icns reused')
+            with patch.object(package, 'ROOT', root), \
+                    patch.object(package.subprocess, 'run', side_effect=command), \
+                    patch.object(package.subprocess, 'check_output', return_value='arm64'):
+                again = package.package_app(game, moltenvk=runtime, output=root / 'again/NFSIV.app')
+            self.assertEqual((again / 'Contents/Resources/NFSIV.icns').read_bytes(), b'icns reused')
+            self.assertNotIn('NFSBuilderVersion', plistlib.loads((again / 'Contents/Info.plist').read_bytes()))
+            self.assertFalse((again / 'Contents/Resources/Game/nfshs.ico').exists())
             converted = app / 'Contents/Resources' / info['CFBundleIconFile']
             data = converted.read_bytes()
             self.assertEqual(data[:4], b'icns')
             self.assertEqual(struct.unpack_from('>I', data, 4)[0], len(data))
-            self.assertEqual((game / 'NFSHS.ICO').read_bytes(), icon)
+
 
     def fixture(self, root):
         game = root / 'Game'

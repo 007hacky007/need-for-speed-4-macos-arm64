@@ -56,7 +56,7 @@ The Builder shows a checklist. Green rows are ready, orange rows are handled aut
 - **Xcode command line tools**: **Install...** opens Apple's installer (about 2 GB).
 - **Build tools (Python)**: the Builder downloads its own private Python into `~/Library/Application Support/NFSIV Builder` and sets up its packages (a private environment) in `~/Library/Caches/NFSIV`, about 70 MB of downloads in all. It never touches other Python installs.
 - **Downloads**: VEG Modern Patch, MoltenVK, glslang and 7-Zip are downloaded during the build if they are not already cached. **Download** fetches them now.
-- **Game copy**: click **Choose...** or drag a folder, `.iso`, `.bin`, `.img`, `.cue` or `.ccd` onto the window. Only the European Road Challenge CD is supported. If your copy is rejected, click **Which copy works?** to see the required file count, size and checksums next to what your copy has.
+- **Game copy**: click **Choose...** or drag a folder, `.iso`, `.bin`, `.img`, `.cue` or `.ccd` onto the window. If you already have an NFSIV.app, the Builder uses the game inside it (see [Updating](#updating)). Only the European Road Challenge CD is supported. If your copy is rejected, click **Which copy works?** to see the required file count, size and checksums next to what your copy has.
 - **Destination**: where NFSIV.app is placed. The default is Applications.
 - **Free disk space**: enough room for the build, and for the app if the destination is on another disk.
 
@@ -71,6 +71,12 @@ Open NFSIV.app. The launcher appears first. Choose the renderer (Vulkan or Metal
 While the game is in front it takes the mouse, as it does on Windows, so the game cursor reaches every edge of the picture. In a window this starts when the pointer first moves over the picture. Press Cmd+Tab to switch to another app and get the Mac pointer back.
 
 You can move the app to another folder; it carries all of its game data and the bundled engine and Vulkan runtime use relative paths. Use **Open Saves** and **Open Logs** in the launcher to find your files. If the game has a graphics problem, try Metal in the launcher to compare it with Vulkan.
+
+### Updating
+
+New features arrive with new NFSIV Builder releases. An app built by NFSIV Builder checks GitHub once a day, in the background, for a newer Builder. When one is out, the launcher shows a short notice: **What's new** opens the release page and **Download** opens the new Builder's disk image in your browser. **Not now** hides the notice until an even newer version appears. Untick **Check for updates** in the launcher and it makes no network request at all.
+
+Open the new Builder. It finds your NFSIV.app (in the folder you built it into, or in Applications), checks the game inside it and offers **Update NFSIV.app** with the old and new version. You do not need your game copy again: the app already holds the prepared game files, and the Builder reuses them when they are exactly what it would make from your copy. If they are missing or were changed, it asks for your original game copy instead. The old app is only read and stays as it is until the new one is complete, and your saves are kept. You can also choose or drop an NFSIV.app in the **Game copy** row. An app built from Terminal has no version stamp and does not check for updates; build it again to update it.
 
 ## Which game copy works
 
@@ -143,6 +149,7 @@ The accepted-game SHA-256 is an **aggregate fingerprint of every extracted file 
 | --- | --- | ---: | --- |
 | User-supplied retail assets | All 1,328 files under `DATA` and `SAVEDATA`, combined | 547,813,845 total | `73cb89e6dd4ea9ca32d02af2c822b22421cf9815e0c5557a3f6046671ed300d2` |
 | User-supplied Windows icon | `NFSHS.ICO` at the retail disc root | 766 | `cd07cfab47d414f218838ed1b5b4f18478e0d0e2eda09bbd3fed47e86c5f2d2a` |
+| Prepared game inside a built NFSIV.app, reused by updates | All 1,328 files under `data` and `savedata` in `Contents/Resources/Game` (the retail assets with VEG's five 4.50 menu files) | 547,816,751 total | `279fe27b1ed88301fabd27649ab9a22aaa0d33c3b7cfe01d0ec6b6e70203f814` |
 | Patched game executable, downloaded with VEG Modern Patch | `nfs4.exe` | 1,984,512 | `17a0f96c3bcfb94fc72d31a429ef56e14ec028e4a6ed1f692cdd8efc0b762980` |
 | Sound module, downloaded with VEG Modern Patch | `eacsnd.dll` | 47,616 | `b23b61b85b3ad6b1d3f449e13a882585c254f271367bce5f932402163c9a358b` |
 

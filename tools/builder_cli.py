@@ -48,6 +48,12 @@ def check_game(path):
         raise game_source.SourceRejected('link')
     if not source.exists():
         raise game_source.SourceRejected('missing')
+    if game_source.is_app(source):
+        # An existing NFSIV.app: its prepared game is reused for an update (read only).
+        verified, previous = game_source.verify_bundle(source)
+        emit({'game': 'ok', 'version': game_source.SUPPORTED['release'], 'app': previous or '',
+              'summary': f"Uses the game inside the current {source.name}, {verified['files']:,} files verified"})
+        return
     if source.is_dir():
         verified = game_source.verify_source(source)
     else:

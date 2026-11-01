@@ -2,7 +2,9 @@
 import configparser
 import hashlib
 from pathlib import Path
+import plistlib
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -32,6 +34,13 @@ GAME_SHA = '17a0f96c3bcfb94fc72d31a429ef56e14ec028e4a6ed1f692cdd8efc0b762980'
 SOUND_SHA = 'b23b61b85b3ad6b1d3f449e13a882585c254f271367bce5f932402163c9a358b'
 ICON_SIZE = SUPPORTED['icon']['bytes']
 ICON_SHA = SUPPORTED['icon']['sha256']
+# What prepare_game makes of the accepted copy with the pinned VEG patch: the retail DATA and
+# SAVEDATA with VEG's five 4.50 menu files on top, measured like SOURCE. A built NFSIV.app
+# carries exactly this tree in Contents/Resources/Game, so an update can reuse it in place of
+# the original copy (whose replaced menu files the app no longer has) when it still matches.
+PREPARED = {'files': 1328, 'bytes': 547816751,
+            'sha256': '279fe27b1ed88301fabd27649ab9a22aaa0d33c3b7cfe01d0ec6b6e70203f814'}
+BUNDLE_ID = 'org.classicgames.nfsiv'
 MESSAGES = {
     'missing': 'The game copy was not found. Choose it again.',
     'link': 'Choose the original folder or file, not an alias or link.',
@@ -47,6 +56,8 @@ MESSAGES = {
     'icon-missing': 'NFSHS.ICO is missing. Choose the disc image instead, or copy NFSHS.ICO from the root of '
                     'the game disc into this folder.',
     'icon': 'NFSHS.ICO does not match the retail disc icon. Copy it again from the root of the game disc.',
+    'not-app': 'This app is not an NFSIV.app built by NFSIV Builder. Choose NFSIV.app or your game copy.',
+    'bundle': 'The game inside this NFSIV.app is missing or was changed. Choose your original game copy.',
 }
 
 
@@ -63,8 +74,9 @@ def describe_rejection(error):
     text = str(error)
     detected = getattr(error, 'detected', None)
     if detected:
+        expected = PREPARED if getattr(error, 'reason', None) == 'bundle' else SOURCE
         text += (f"\nDetected: {detected['files']:,} files, {detected['bytes']:,} bytes, SHA-256 "
-                 f"{detected['sha256']}; expected {SOURCE['files']:,} files, {SOURCE['bytes']:,} bytes.")
+                 f"{detected['sha256']}; expected {expected['files']:,} files, {expected['bytes']:,} bytes.")
     return text
 
 
@@ -179,6 +191,108 @@ def extract_source(source, destination):
     except DiscError as error:
         print(f'Disc image error: {error}', file=sys.stderr, flush=True)
         raise SourceRejected(error.reason) from error
+
+
+def is_app(path):
+    return Path(path).suffix.lower() == '.app' and Path(path).is_dir()
+
+
+def app_info(app):
+    """The Info.plist of an NFSIV.app this project built, or SourceRejected('not-app')."""
+    app = Path(app)
+    plist = app / 'Contents/Info.plist'
+    try:
+        info = plistlib.loads(plist.read_bytes()) if not app.is_symlink() and not plist.is_symlink() else None
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        info = None
+    if not isinstance(info, dict) or info.get('CFBundleIdentifier') != BUNDLE_ID:
+        raise SourceRejected('not-app')
+    return info
+
+
+def check_prepared(game):
+    """Raise SourceRejected('bundle') unless `game` is exactly the tree prepare_game makes."""
+    try:
+        actual = inventory(game)
+        for name, sha in (('nfs4.exe', GAME_SHA), ('eacsnd.dll', SOUND_SHA)):
+            if digest(child(game, name)) != sha:
+                raise SourceRejected('bundle', detected=actual)
+    except SourceRejected as error:
+        if error.reason == 'bundle':
+            raise
+        raise SourceRejected('bundle') from error
+    except (OSError, ValueError) as error:
+        raise SourceRejected('bundle') from error
+    if actual != PREPARED:
+        raise SourceRejected('bundle', detected=actual)
+    return actual
+
+
+def verify_bundle(app):
+    """Check the game an existing NFSIV.app carries, reading it only.
+    -> (inventory, the Builder version that built it or None)."""
+    info = app_info(app)
+    game = Path(app) / 'Contents/Resources/Game'
+    if game.is_symlink() or not game.is_dir():
+        raise SourceRejected('bundle')
+    return check_prepared(game), info.get('NFSBuilderVersion')
+
+
+def clone(source, destination):
+    """APFS clone (cp -c) when source and destination share a volume, else a plain copy."""
+    source, destination = Path(source), Path(destination)
+    if subprocess.run(['/bin/cp', '-c', '-R' if source.is_dir() else '-p', str(source), str(destination)],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        return
+    if destination.is_dir():
+        shutil.rmtree(destination)
+    elif destination.exists():
+        destination.unlink()
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        shutil.copy2(source, destination)
+
+
+def reuse_bundle(app, destination):
+    """Prepare `destination` from the game an existing NFSIV.app carries, for an update.
+
+    The old app is only read: its files are cloned, and the clone, not the original, is what
+    gets verified and used, so a change to the old app meanwhile cannot slip in. The icon is
+    the bundled NFSHS.ICO when the app has it, else (apps from before it was kept) the
+    converted NFSIV.icns."""
+    app, destination = Path(app), Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(destination)
+    app_info(app)
+    game = app / 'Contents/Resources/Game'
+    if game.is_symlink() or not game.is_dir():
+        raise SourceRejected('bundle')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir()
+    try:
+        for name in ('data', 'savedata', 'nfs4.exe', 'eacsnd.dll'):
+            try:
+                source = child(game, name)
+            except ValueError as error:
+                raise SourceRejected('bundle') from error
+            clone(source, destination / name.casefold())
+        verified = check_prepared(destination)
+        icon = [p for p in game.iterdir() if p.name.casefold() == 'nfshs.ico']
+        if len(icon) == 1 and icon[0].is_file() and not icon[0].is_symlink():
+            clone(icon[0], destination / 'nfshs.ico')
+            if digest(destination / 'nfshs.ico') != ICON_SHA:
+                raise SourceRejected('bundle')
+        else:
+            converted = app / 'Contents/Resources/NFSIV.icns'
+            if converted.is_symlink() or not converted.is_file() or converted.read_bytes()[:4] != b'icns':
+                raise SourceRejected('bundle')
+            clone(converted, destination / 'NFSIV.icns')
+        # The driver and nfs4.ini files are written again when the app is packaged.
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
+    return verified
 
 
 def copy_assets(source, destination):

@@ -55,6 +55,11 @@ final class BuilderModel: ObservableObject {
     private var checkedGame: URL?
     /// A chosen item that is not a game candidate, with the reason, until another is chosen.
     private var gameChoiceMessage: String?
+    /// The game copy the user chose before, while an existing NFSIV.app found on start is tried
+    /// in its place; it comes back when that app's game cannot be reused.
+    private var savedGame: URL?
+    private var savedDestination: URL?
+    private var tryingExistingApp = false
     private var downloadsRunner: PipelineRunner?
     /// The community setting the Downloads row was last checked for.
     private var downloadsCheckedFor: Bool?
@@ -77,7 +82,19 @@ final class BuilderModel: ObservableObject {
         states = initial
         gamePath = saved.string(forKey: "gamePath").map { URL(fileURLWithPath: $0) }
         destination = saved.string(forKey: "destination").map { URL(fileURLWithPath: $0) } ?? defaultDestination
+        // An update: the game inside the current NFSIV.app is reused if it passes the usual checks.
+        if let app = existingGameApp(destination: destination), gamePath.map(isAppBundle) != true {
+            savedGame = gamePath
+            gamePath = app
+            tryingExistingApp = true
+            // The update replaces that app where it is (not saved until the user changes it).
+            savedDestination = destination
+            destination = app.deletingLastPathComponent()
+        }
     }
+
+    /// "Build NFSIV.app", or "Update NFSIV.app (old -> new)" when the game comes from an existing app.
+    var buildTitle: String { buildButtonTitle(source: gamePath, builderVersion: version) }
 
     private static func downloadsPending(community: Bool) -> CheckState {
         .automatic("Will be downloaded during the build (about \(community ? 245 : 75) MB)")
@@ -179,6 +196,7 @@ final class BuilderModel: ObservableObject {
     }
 
     func setDestination(_ url: URL) {
+        savedDestination = nil
         destination = url
         defaults.set(url.path, forKey: "destination")
         states[.destination] = destinationCheck(url)
@@ -186,6 +204,7 @@ final class BuilderModel: ObservableObject {
     }
 
     static let gameExtensions = ["iso", "bin", "img", "cue", "ccd"]
+    static let chooseGameText = "Choose a game folder, .iso, .bin, .img, .cue or .ccd, or NFSIV.app"
 
     /// Why `url` cannot be chosen as a game copy, or nil when it can.
     static func gameChoiceProblem(_ url: URL) -> String? {
@@ -195,11 +214,12 @@ final class BuilderModel: ObservableObject {
         }
         if isDir.boolValue || gameExtensions.contains(url.pathExtension.lowercased()) { return nil }
         if url.pathExtension.lowercased() == "sub" { return "Choose the .ccd or .img file, not .sub" }
-        return "Choose a game folder, .iso, .bin, .img, .cue or .ccd"
+        return chooseGameText
     }
 
     func setGame(_ url: URL) {
         guard phase == .checklist else { return }
+        tryingExistingApp = false
         if let problem = Self.gameChoiceProblem(url) {
             gameRunner?.cancel()
             gameRunner = nil
@@ -223,7 +243,7 @@ final class BuilderModel: ObservableObject {
     private func refreshGame() {
         guard let game = gamePath else {
             clearGameResult()
-            states[.gameCopy] = .blocked(gameChoiceMessage ?? "Choose a game folder, .iso, .bin, .img, .cue or .ccd")
+            states[.gameCopy] = .blocked(gameChoiceMessage ?? Self.chooseGameText)
             return
         }
         guard pythonReady else {
@@ -257,7 +277,17 @@ final class BuilderModel: ObservableObject {
             guard gameRunner === runner else { return }
             gameRunner = nil
             if status == 0, let detected = detected {
+                tryingExistingApp = false
                 states[.gameCopy] = .ready(detected)
+            } else if tryingExistingApp {
+                // The app found on start cannot be reused: back to the copy chosen before, or
+                // the empty row with a short note.
+                tryingExistingApp = false
+                gamePath = savedGame
+                if let saved = savedDestination, saved != destination { setDestination(saved) }
+                gameChoiceMessage = savedGame == nil ? existingAppUnusable : nil
+                checkedGame = nil
+                refreshGame()
             } else {
                 let text = Self.plain(rejection?.message ?? message ?? "Could not check this game copy")
                 gameRejection = rejection
