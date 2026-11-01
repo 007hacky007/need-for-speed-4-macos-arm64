@@ -54,7 +54,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 
 subprocess.run(['clang', '-arch', 'arm64', '-mmacosx-version-min=11.0', '-Wl,-dead_strip',
                 '-o', 'out/nfsiv', *map(str, objects), '-lm', '-lz',
                 '-L' + str(MOLTENVK / 'dynamic/dylib/macOS'), '-lMoltenVK',
-                '-Wl,-rpath,@executable_path/../local/MoltenVK/MoltenVK/dynamic/dylib/macOS',
                 '-Wl,-rpath,@executable_path/../Frameworks', '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'QuartzCore',
                 '-framework', 'AudioToolbox', '-framework', 'AudioUnit', '-framework', 'CoreAudio'], check=True)
 print('Built out/nfsiv (ARM64)')
