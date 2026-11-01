@@ -13,6 +13,7 @@ extern jmp_buf g_exit_jmp;
 extern int g_exit_code, g_exit_armed;
 void fileio_set_root(const char *);
 void fileio_set_write_root(const char *);
+int fileio_set_addon_root(const char *);
 void fileio_set_readonly_root(int);
 void guest_lock(CPU *);
 void guest_unlock(void);
@@ -68,7 +69,7 @@ static void *run_guest(void *arg){
 
 int main(int argc, char **argv){
     @autoreleasepool {
-        if (argc<2||argc>3){ fputs("usage: out/nfsiv /path/to/linked.exe [/path/to/game]\n",stderr); return 1; }
+        if (argc<2||argc>4){ fputs("usage: out/nfsiv /path/to/linked.exe [/path/to/game [/path/to/addon/overlay]]\n",stderr); return 1; }
         mem_init(); mem_fault_handler_install();
         if (mem_load_pe(argv[1])) return 1;
         const char *watch=getenv("NFSIV_WATCH_ADDR");
@@ -77,11 +78,14 @@ int main(int argc, char **argv){
             if(*end||value>0xfffffffcu||!mem_valid((uint32_t)value,4)){fputs("invalid diagnostic watch address\n",stderr);return 1;}
             g_watch_addr=(uint32_t)value;g_watch_val=MR32(g_watch_addr);
         }
-        if(argc==3){
+        if(argc>=3){
             char path[4096];
             if(snprintf(path,sizeof path,"%s/nfs4.exe",argv[2])>=(int)sizeof path)return 1;
             fileio_set_root(path);
         }else fileio_set_root(argv[1]);
+        /* A community content profile: its overlay is read before the game
+         * folder, in place (both inside the .app), never copied. */
+        if(argc==4&&fileio_set_addon_root(argv[3])<0){ fprintf(stderr,"add-on folder is missing or unusable: %s\n",argv[3]); return 1; }
         const char *save=getenv("NFSIV_SAVE_DIR");
         if (!save || !*save) save="out/saves";
         if (mkdir(save,0755) && errno!=EEXIST){ perror(save); return 1; }

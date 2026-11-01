@@ -174,15 +174,19 @@ static int overlay_cannot_have(const char *win){
     g_ovc_skips++;
     return 1;
 }
-/* --- language pack (runtime/language.c) ---------------------------------
- * LANGPACKS/<language> in the game folder holds the files a language plays
- * with in place of the game folder's: a file there is read instead of the
- * game's file of the same path (case-insensitive), as long as the save
- * overlay has no copy of its own.  Its list is read once, so every other
- * open costs nothing more. */
+/* --- read-only overlay: a community add-on or a language pack -----------
+ * A folder whose files the game reads in place of the game folder's: a file
+ * or folder there is used instead of the game's one of the same path
+ * (case-insensitive), as long as the save overlay has no copy of its own, and
+ * directory listings show its names too.  The .app runs a community content
+ * profile this way straight from its bundle: the game folder is
+ * Resources/Game and the profile's Resources/Addons/<id>/Overlay is searched
+ * first, so nothing is copied or linked anywhere.  Its list is read once, so
+ * every other open costs nothing more.  Nothing is ever written there. */
 static char g_lroot[1024];
-static struct lfile { char *key, *rel; } *g_lf;     /* sorted by key: the path lower-cased */
+static struct lfile { char *key, *rel; int dir; } *g_lf;     /* sorted by key: the path lower-cased */
 static int g_lnf, g_lcap;
+static uint64_t g_addon_opens;
 static int lfile_cmp(const void *a, const void *b){
     return strcmp(((const struct lfile *)a)->key, ((const struct lfile *)b)->key);
 }
@@ -194,29 +198,51 @@ static void lpack_walk(const char *dir, const char *rel){
         char p[1100], r[1024]; struct stat st;
         snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
         snprintf(r, sizeof r, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
-        if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)){ lpack_walk(p, r); continue; }
-        if (!S_ISREG(st.st_mode)) continue;
+        if (lstat(p, &st) != 0) continue;
+        if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) continue;   /* no links out of the folder */
         if (g_lnf == g_lcap){
             g_lcap = g_lcap ? 2*g_lcap : 64;
             struct lfile *nf = realloc(g_lf, (size_t)g_lcap * sizeof *g_lf); if (!nf) break;
             g_lf = nf;
         }
-        g_lf[g_lnf].rel = strdup(r); g_lf[g_lnf].key = strdup(r);
+        g_lf[g_lnf].rel = strdup(r); g_lf[g_lnf].key = strdup(r); g_lf[g_lnf].dir = S_ISDIR(st.st_mode);
         for (char *k = g_lf[g_lnf].key; *k; k++) *k = (char)tolower((unsigned char)*k);
         g_lnf++;
+        if (S_ISDIR(st.st_mode)) lpack_walk(p, r);
     }
     closedir(d);
+}
+static int lpack_load(void){
+    struct stat st;
+    if (stat(g_lroot, &st) != 0 || !S_ISDIR(st.st_mode)){ g_lroot[0] = 0; return -1; }
+    lpack_walk(g_lroot, "");
+    qsort(g_lf, (size_t)g_lnf, sizeof *g_lf, lfile_cmp);
+    for (int i = 1; i < g_lnf; i++)
+        if (!strcmp(g_lf[i-1].key, g_lf[i].key)){
+            fprintf(stderr, "file: overlay names differ only in case: \"%s\", \"%s\"\n", g_lf[i-1].rel, g_lf[i].rel);
+            g_lroot[0] = 0; g_lnf = 0; return -1; }
+    int files = 0;
+    for (int i = 0; i < g_lnf; i++) files += !g_lf[i].dir;
+    return files;
 }
 /* -> how many files the pack has (0: none, or no such folder) */
 int fileio_set_language_pack(const char *rel){
     if (!resolve_in(g_root, rel, g_lroot, sizeof g_lroot)) return 0;
-    lpack_walk(g_lroot, "");
-    qsort(g_lf, (size_t)g_lnf, sizeof *g_lf, lfile_cmp);
-    return g_lnf;
+    int files = lpack_load();
+    return files < 0 ? 0 : files;
+}
+/* A community add-on's overlay folder (an absolute host path), read before
+ * the game folder.  -> how many files it has; -1 if it is not a usable folder. */
+int fileio_set_addon_root(const char *dir){
+    if (!dir || !*dir || snprintf(g_lroot, sizeof g_lroot, "%s", dir) >= (int)sizeof g_lroot){ g_lroot[0] = 0; return -1; }
+    size_t l = strlen(g_lroot);
+    while (l > 1 && g_lroot[l-1] == '/') g_lroot[--l] = 0;
+    int files = lpack_load();
+    if (files >= 0) fprintf(stderr, "file: add-on folder = %s (%d files, read before the game folder)\n", g_lroot, files);
+    return files;
 }
 static int lpack_resolve(const char *win, char *out, size_t outsz){
-    if (!g_lnf) return 0;
+    if (!g_lnf || !g_lroot[0]) return 0;
     char rel[1024]; rel_of(win, rel, sizeof rel);
     for (char *k = rel; *k; k++) *k = (char)tolower((unsigned char)*k);
     struct lfile key = { rel, 0 };
@@ -225,15 +251,19 @@ static int lpack_resolve(const char *win, char *out, size_t outsz){
     snprintf(out, outsz, "%s/%s", g_lroot, f->rel);
     return 1;
 }
-/* Read: the write root if the file is there, then the language pack, otherwise the game root. */
+/* Read without the save overlay: the add-on (or language pack), otherwise the game root. */
+static int resolve_ro(const char *win, char *out, size_t outsz){
+    if (lpack_resolve(win, out, outsz)) return 1;
+    return resolve_in(g_root, win, out, outsz);
+}
+/* Read: the write root if the file is there, then the add-on, otherwise the game root. */
 static int resolve(const char *win, char *out, size_t outsz){
     if (g_wroot[0] && !overlay_cannot_have(win)){
         char w[1024];
         if (resolve_in(g_wroot, win, w, sizeof w) && strcmp(w, g_wroot) != 0){
             snprintf(out, outsz, "%s", w); return 1; }
     }
-    if (lpack_resolve(win, out, outsz)) return 1;
-    return resolve_in(g_root, win, out, outsz);
+    return resolve_ro(win, out, outsz);
 }
 /* Write: ALWAYS the write root if there is one. */
 static int resolve_w(const char *win, char *out, size_t outsz){
@@ -264,14 +294,15 @@ static int copy_file(const char *a, const char *b,int replace){
     }
     unlink(temporary);if(error){errno=error;return 0;}return 1;
 }
-/* If a file to be written without truncation exists only in the game root,
- * copy it to the write root first; otherwise the game writes over an empty file. */
+/* If a file to be written without truncation exists only in the game root
+ * (or the add-on), copy it to the write root first; otherwise the game
+ * writes over an empty file. */
 static int copy_up(const char *win, const char *wpath){
     if (!g_wroot[0]) return 1;
     struct stat st; if (stat(wpath, &st) == 0) return 1;
     if(errno!=ENOENT)return 0;
     char src[1024];
-    if (resolve_in(g_root, win, src, sizeof src) && stat(src, &st) == 0 && S_ISREG(st.st_mode))
+    if (resolve_ro(win, src, sizeof src) && stat(src, &st) == 0 && S_ISREG(st.st_mode))
         return copy_file(src, wpath,0);
     return 1;
 }
@@ -367,7 +398,8 @@ static void gf_forget(void){}
 #endif
 
 static int write_allowed(const char *op, const char *win, const char *host){
-    int in_root = path_under(host, g_root) && !(g_wroot[0] && path_under(host, g_wroot));
+    int in_root = (path_under(host, g_root) || (g_lroot[0] && path_under(host, g_lroot))) &&
+                  !(g_wroot[0] && path_under(host, g_wroot));      /* the add-on is read-only too */
     int blocked = in_root && g_ro_root;
     g_wr_ops++; g_ov_gen++;                  /* the overlay may change: forget what it lacked */
     gf_forget();                             /* and the game folder's files kept (GF_CACHE) */
@@ -385,6 +417,7 @@ int fileio_open_writers(void){ return g_open_wr; }
 #define FH_MAX  256
 typedef struct { int fd; int empty; int used; char path[512]; DIR *dir; char pat[128];
                  DIR *dir2; char path1[512];        /* dir2: game root (while the save overlay is active) */
+                 DIR *dir3; char path3[512];        /* dir3: the add-on's folder, between the two */
                  int wr;                            /* wr: opened for writing (g_open_wr) */
                  int gf; unsigned gf_gen; int64_t pos, size; } FH;   /* gf: a game folder file's name + 1 (GF_CACHE) */
 static FH g_fh[FH_MAX];
@@ -433,10 +466,24 @@ static int wild_match(const char *p, const char *s){
     }
     return *s == 0;
 }
+/* whether folder dir (none if "") has an entry of that name, in any case */
+static int dir_has(const char *dir, const char *name){
+    if (!dir[0]) return 0;
+    char p[1100]; struct stat st;
+    snprintf(p, sizeof p, "%s/%s", dir, name);
+    if (lstat(p, &st) == 0) return 1;
+    DIR *d = opendir(dir); if (!d) return 0;
+    struct dirent *e; int found = 0;
+    while (!found && (e = readdir(d))) found = !strcasecmp(e->d_name, name);
+    closedir(d);
+    return found;
+}
 /* v12na: the pattern is now applied and the full path is returned too (for
  * attributes/size).  Every entry used to be returned regardless of the
  * pattern and as a "file"; the game never saw its profile folders
- * (FILE_ATTRIBUTE_DIRECTORY). */
+ * (FILE_ATTRIBUTE_DIRECTORY).
+ * Order: the write root, the add-on, the game root; a name already given by
+ * an earlier one (in any case) is not given again. */
 static int find_next(FH *f, char *nm, size_t nsz, char *full, size_t fsz){
     struct dirent *e;
     if (f->dir){
@@ -446,14 +493,22 @@ static int find_next(FH *f, char *nm, size_t nsz, char *full, size_t fsz){
             snprintf(nm, nsz, "%s", e->d_name);
             snprintf(full, fsz, "%s/%s", f->path1, e->d_name); return 1; }
     }
+    if (f->dir3){
+        while ((e = readdir(f->dir3))){
+            if (e->d_name[0] == '.') continue;
+            if (!wild_match(f->pat, e->d_name)) continue;
+            if (dir_has(f->path1, e->d_name)) continue;
+            char p[1100]; struct stat st;          /* as in its index: files and folders, no links */
+            snprintf(p, sizeof p, "%s/%s", f->path3, e->d_name);
+            if (lstat(p, &st) != 0 || (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))) continue;
+            snprintf(nm, nsz, "%s", e->d_name);
+            snprintf(full, fsz, "%s/%s", f->path3, e->d_name); return 1; }
+    }
     if (f->dir2){
         while ((e = readdir(f->dir2))){
             if (e->d_name[0] == '.') continue;
             if (!wild_match(f->pat, e->d_name)) continue;
-            if (f->path1[0]){               /* already given from the write root */
-                char p[1024]; struct stat st;
-                snprintf(p, sizeof p, "%s/%s", f->path1, e->d_name);
-                if (stat(p, &st) == 0) continue; }
+            if (dir_has(f->path1, e->d_name) || dir_has(f->path3, e->d_name)) continue;
             snprintf(nm, nsz, "%s", e->d_name);
             snprintf(full, fsz, "%s/%s", f->path, e->d_name); return 1; }
     }
@@ -553,18 +608,26 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
          * the requested file is missing, try "_en" and the unsuffixed name. */
         /* (resolve found the path, so it exists: no second stat, which is
          * another round trip to the I/O worker in the browser) */
+        /* A read tries the other names through every layer (save overlay,
+         * add-on, game folder) by their guest path; a write only next to
+         * its target in the write root. */
         struct stat _st;
         if (!(flags & O_CREAT) && !ok){
-            char alt[1024]; const char *dot = strrchr(real, '.');
-            if (dot && dot - real > 3){
-                size_t base = (size_t)(dot - real);
+            const char *name = flags == O_RDONLY ? GS(pn) : real;
+            char alt[1024], cand[1024]; const char *dot = strrchr(name, '.');
+            const char *sl = strrchr(name, '/'), *bsl = strrchr(name, '\\');
+            if (bsl > sl) sl = bsl;
+            if (dot && dot > name && (!sl || dot > sl + 1)){
+                size_t base = (size_t)(dot - name);
                 const char *sfx[] = { "_en", "", "_dn", "_du", "_sw" };
                 for (int q = 0; q < 5; q++){
                     /* remove the current language suffix (if any) */
                     size_t cut = base;
-                    if (base >= 3 && real[base-3] == '_') cut = base - 3;
-                    snprintf(alt, sizeof alt, "%.*s%s%s",
-                             (int)cut, real, sfx[q], dot);
+                    if (base >= 3 && name[base-3] == '_') cut = base - 3;
+                    snprintf(cand, sizeof cand, "%.*s%s%s",
+                             (int)cut, name, sfx[q], dot);
+                    if (flags != O_RDONLY) snprintf(alt, sizeof alt, "%s", cand);
+                    else if (!resolve(cand, alt, sizeof alt)) continue;
                     if (stat(alt, &_st) == 0){
                         if (getenv("VERBOSE") || getenv("FILELIST"))
                             fprintf(stderr,"  [file] language fallback: \"%s\" -> \"%s\"\n",
@@ -609,6 +672,8 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
             if(!h){ close(fd); r=INVALID_HANDLE; }
             else { FH*f=fh_get(h); f->fd=fd; f->empty = g_empty_next; g_empty_next = 0;
                    snprintf(f->path,sizeof f->path,"%s",real);
+                   if (g_lroot[0] && path_under(real, g_lroot) && ++g_addon_opens <= 100)
+                       fprintf(stderr,"  [file] add-on: \"%s\" -> \"%s\"\n", GS(pn), real);
                    if (flags != O_RDONLY){ f->wr = 1; g_open_wr++; }
 #ifdef GF_CACHE
                    /* a file of the game folder or the language pack, not a movie (NOMOVIES may empty those) */
@@ -772,6 +837,8 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
 #endif
         if(f->fd>=0) close(f->fd);
         if(f->dir) closedir(f->dir);
+        if(f->dir2) closedir(f->dir2);
+        if(f->dir3) closedir(f->dir3);
         if(f->wr){ g_open_wr--; }
         f->used=0; r=1;
     }
@@ -850,7 +917,8 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
         else {
             mkparents(b);
             /* If the source is in the game root (read-only), copy instead of moving. */
-            if ((g_wroot[0] && !path_under(a, g_wroot)) || (g_ro_root && path_under(a, g_root)))
+            if ((g_wroot[0] && !path_under(a, g_wroot)) || (g_ro_root && path_under(a, g_root)) ||
+                (g_lroot[0] && path_under(a, g_lroot)))
                 r = (uint32_t)copy_file(a, b,0);
             else r = write_allowed("MoveFileA (source)", GS(A(c,0)), a) && rename(a,b)==0;
 
@@ -874,23 +942,30 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
         char pat[128]="*";
         if (sep){ snprintf(pat,sizeof pat,"%s",sep+1); *sep=0; } else { snprintf(pat,sizeof pat,"%s",win); win[0]=0; }
         /* With the save overlay active, the folder in the write root is
-         * scanned first, then the one in the game root (no name is given twice). */
-        char real[1024], wreal[1024]; wreal[0] = 0;
+         * scanned first, then the add-on's, then the one in the game root
+         * (no name is given twice). */
+        char real[1024], wreal[1024], areal[1024]; wreal[0] = areal[0] = 0;
         if (win[0]) resolve_in(g_root, win, real, sizeof real); else snprintf(real,sizeof real,"%s",g_root);
         if (g_wroot[0]){
             if (win[0]) resolve_in(g_wroot, win, wreal, sizeof wreal);
             else snprintf(wreal, sizeof wreal, "%s", g_wroot); }
+        if (g_lroot[0]){
+            if (!win[0]) snprintf(areal, sizeof areal, "%s", g_lroot);
+            else if (!resolve_in(g_lroot, win, areal, sizeof areal)) areal[0] = 0; }
         DIR *d1 = wreal[0] ? opendir(wreal) : 0;
+        DIR *d3 = areal[0] ? opendir(areal) : 0;
         DIR *d2 = opendir(real);
-        if(!d1 && !d2){ r=INVALID_HANDLE; set_err(c, 3u); }   /* ERROR_PATH_NOT_FOUND */
+        if (!d3) areal[0] = 0;
+        if(!d1 && !d2 && !d3){ r=INVALID_HANDLE; set_err(c, 3u); }   /* ERROR_PATH_NOT_FOUND */
         else { uint32_t h=fh_new(); FH*f=fh_get(h);
-               if(!f){ if(d1) closedir(d1); if(d2) closedir(d2); r=INVALID_HANDLE; }
-               else { f->dir=d1; f->dir2=d2; snprintf(f->pat,sizeof f->pat,"%s",pat);
+               if(!f){ if(d1) closedir(d1); if(d2) closedir(d2); if(d3) closedir(d3); r=INVALID_HANDLE; }
+               else { f->dir=d1; f->dir2=d2; f->dir3=d3; snprintf(f->pat,sizeof f->pat,"%s",pat);
                       snprintf(f->path1,sizeof f->path1,"%s",wreal);
+                      snprintf(f->path3,sizeof f->path3,"%s",areal);
                       snprintf(f->path,sizeof f->path,"%s",real);
                       char nm[260], full[1300];
                       if (!find_next(f, nm, sizeof nm, full, sizeof full)){
-                          if(f->dir) closedir(f->dir); if(f->dir2) closedir(f->dir2);
+                          if(f->dir) closedir(f->dir); if(f->dir2) closedir(f->dir2); if(f->dir3) closedir(f->dir3);
                           f->used=0; r=INVALID_HANDLE; set_err(c, 2u); }   /* ERROR_FILE_NOT_FOUND */
                       else { find_fill(A(c,1), nm, full); r=h; } } }
         if (getenv("FILELIST")) fprintf(stderr, "  [file] FindFirstFileA(\"%s\") -> %s\n", spec,
@@ -898,13 +973,13 @@ int fileio_call(CPU *c, const char *n, uint32_t *out){
     }
     else if (!strcmp(n,"FindNextFileA")){
         FH*f=fh_get(A(c,0)); r=0; char nm[260], full[1300];
-        if(f && (f->dir || f->dir2) && find_next(f, nm, sizeof nm, full, sizeof full)){
+        if(f && (f->dir || f->dir2 || f->dir3) && find_next(f, nm, sizeof nm, full, sizeof full)){
             find_fill(A(c,1), nm, full); r=1; }
         else set_err(c, 18u);                                    /* ERROR_NO_MORE_FILES */
     }
     else if (!strcmp(n,"FindClose")){
         FH*f=fh_get(A(c,0));
-        if(f){ if(f->dir) closedir(f->dir); if(f->dir2) closedir(f->dir2); f->used=0; } r=1;
+        if(f){ if(f->dir) closedir(f->dir); if(f->dir2) closedir(f->dir2); if(f->dir3) closedir(f->dir3); f->used=0; } r=1;
     }
     else return 0;
     *out = r;
@@ -921,6 +996,7 @@ void fileio_report(void){
     fprintf(stderr,"  file: %llu opened, %llu could not be opened, %llu reads, %.1f MB; %llu save overlay lookups skipped\n",
             (unsigned long long)g_file_open,(unsigned long long)g_file_fail,
             (unsigned long long)g_file_read,(double)g_bytes_read/1048576.0, (unsigned long long)g_ovc_skips);
+    if (g_lroot[0]) fprintf(stderr,"  file: %llu opened from the add-on folder\n", (unsigned long long)g_addon_opens);
 #ifdef GF_CACHE
     fprintf(stderr,"  file: %llu opens of the game folder's files known already, %llu of them on a kept descriptor (%d names, %d kept)\n",
             (unsigned long long)g_gf_hits, (unsigned long long)g_gf_fds, g_gf_n, g_gfd_n);
