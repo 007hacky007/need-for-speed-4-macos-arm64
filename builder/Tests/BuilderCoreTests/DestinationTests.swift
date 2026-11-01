@@ -39,6 +39,29 @@ final class DestinationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dest.appendingPathComponent(".NFSIV.app.installing").path))
     }
 
+    private func hasQuarantine(_ url: URL) -> Bool {
+        getxattr(url.path, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) >= 0
+    }
+
+    /// Only what the build made loses quarantine; the game data from the player's copy keeps it.
+    func testInstallKeepsQuarantineOnTheGameData() throws {
+        let dest = root.appendingPathComponent("dest")
+        try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        let built = root.appendingPathComponent("built/NFSIV.app")
+        try makeApp(at: built, marker: "new")
+        let game = built.appendingPathComponent("Contents/Resources/Game/data")
+        try FileManager.default.createDirectory(at: game, withIntermediateDirectories: true)
+        let data = game.appendingPathComponent("car.viv")
+        try "data".write(to: data, atomically: true, encoding: .utf8)
+        for file in [data, built.appendingPathComponent("Contents/marker"), built] {
+            XCTAssertEqual(setxattr(file.path, "com.apple.quarantine", "0081;00000000;Test;", 19, 0, XATTR_NOFOLLOW), 0)
+        }
+        let result = try installApp(built, into: dest, isRunning: { false })
+        XCTAssertTrue(hasQuarantine(result.appendingPathComponent("Contents/Resources/Game/data/car.viv")))
+        XCTAssertFalse(hasQuarantine(result.appendingPathComponent("Contents/marker")))
+        XCTAssertFalse(hasQuarantine(result))
+    }
+
     func testFreshInstallAndStaleStagingCleaned() throws {
         try makeApp(at: dest.appendingPathComponent(".NFSIV.app.installing"), marker: "stale")
         try makeApp(at: built, marker: "new")

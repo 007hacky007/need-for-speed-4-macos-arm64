@@ -47,7 +47,7 @@ public func installApp(_ built: URL, into directory: URL, isRunning: () -> Bool)
     do {
         if fm.fileExists(atPath: staging.path) { try fm.removeItem(at: staging) }
         try fm.copyItem(at: built, to: staging)
-        try removeQuarantine(at: staging)
+        try removeQuarantine(fromBuiltApp: staging)
         var final = target
         if fm.fileExists(atPath: target.path) {
             final = try fm.replaceItemAt(target, withItemAt: staging) ?? target
