@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # A dry run from the Actions tab: tests and builds the Builder and its disk
+  # image, publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,6 +17,9 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # Builder version: the tag without its "v"; dry runs build 0.0.0.
+      VERSION_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -37,20 +43,21 @@ jobs:
       - name: Build app
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION_TAG#v}"
           python tools/make_builder.py --version "$VERSION" --output dist
 
       - name: Build disk image
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION_TAG#v}"
           dmgbuild -s builder/dmg/settings.py -D app="dist/NFSIV Builder.app" "NFSIV Builder $VERSION" dist/NFSIV-Builder.dmg
           (cd dist && shasum -a 256 NFSIV-Builder.dmg > NFSIV-Builder.dmg.sha256)
 
       - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION_TAG#v}"
           gh release create "$GITHUB_REF_NAME" dist/NFSIV-Builder.dmg dist/NFSIV-Builder.dmg.sha256 --title "NFSIV Builder $VERSION" --generate-notes
