@@ -319,8 +319,16 @@ class GameSourceTests(unittest.TestCase):
         self.assertIsNone(quarantine_of(out / 'DIRECTX/plain.txt'))
         self.assertEqual(quarantine_of(out / 'SETUP.EXE', 'org.example.other'), 'kept')
         self.assertEqual(os.readlink(out / 'DIRECTX/link'), '/usr/bin/true')
-        # Fail closed: a quarantine that cannot be put back stops the copy.
-        with patch.object(game_source.subprocess, 'run', side_effect=no_clones), \
+        # Fail closed: a quarantine that cannot be put back stops the copy. The copy here loses
+        # it for sure (cp -p keeps the exact value on some macOS versions and rewrites it on others).
+        def losing_copy(args, **kwargs):
+            if args[:2] == ['/bin/cp', '-c']:
+                return subprocess.CompletedProcess(args, 1)
+            result = run(args, **kwargs)
+            if args[:1] == ['/bin/cp']:
+                run(['/usr/bin/xattr', '-d', 'com.apple.quarantine', args[-1]], capture_output=True)
+            return result
+        with patch.object(game_source.subprocess, 'run', side_effect=losing_copy), \
                 patch.object(game_source, 'set_quarantine', side_effect=OSError(1, 'refused')):
             with self.assertRaises(OSError):
                 game_source.clone(source / 'SETUP.EXE', out / 'again.exe')
