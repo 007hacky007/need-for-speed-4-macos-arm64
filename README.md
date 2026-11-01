@@ -62,7 +62,7 @@ The Builder shows a checklist. Green rows are ready, orange rows are handled aut
 
 Below the list, tick **Include community cars and tracks** to add the High Stakes Expansion Pack's cars, tracks and pursuit traffic (an extra 170 MB download and more disk space). The Builder remembers your choice.
 
-Fix the red rows, then click **Build NFSIV.app**. When it finishes you can click **Play**, **Show in Finder** or **Remove build files**; your saves are never changed. The Builder shares the download cache `~/Library/Caches/NFSIV` with `./build.sh`.
+Fix the red rows, then click **Build NFSIV.app**. When it finishes you can click **Play**, **Show in Finder** or **Delete temporary files**, which shows its size and deletes only the Builder's own work files; your saves are never changed. The Builder shares the download cache `~/Library/Caches/NFSIV` with `./build.sh`.
 
 ### Playing
 
@@ -177,7 +177,7 @@ The app is self-contained: all game data, including the community content, is in
 
 Downloaded patches and private build tools use the macOS user cache by default. Each build retains a fresh prepared game and checksum metadata in ignored working directories. Earlier prepared copies can be removed when no longer needed. Generated translations and binaries are also excluded from version control.
 
-NFSIV Builder keeps its private Python and build files in `~/Library/Application Support/NFSIV Builder` and shares the download cache, including the private package environment, in `~/Library/Caches/NFSIV` with `./build.sh`. It removes each build's prepared game and community files when the build ends. **Remove build files**, offered after a successful build, frees the space used while building; Python and the downloads are kept.
+NFSIV Builder keeps its private Python and build files in `~/Library/Application Support/NFSIV Builder` and shares the download cache, including the private package environment, in `~/Library/Caches/NFSIV` with `./build.sh`. It removes each build's prepared game and community files when the build ends. **Delete temporary files**, offered after a successful build with its size, deletes only `~/Library/Application Support/NFSIV Builder/<version>`: the Builder's copy of the build scripts, the translated and compiled game code and the copy of NFSIV.app it made before installing it. NFSIV.app, your game copy, saves and settings stay, and so do the Builder's Python and the downloads. An update makes the work files again.
 
 ```sh
 ./build.sh --help

@@ -336,4 +336,35 @@ final class EnvironmentTests: XCTestCase {
         }
         try removeQuarantine(at: dir)
     }
+
+    /// The size on the delete button: what the files really take on disk.
+    func testAllocatedSizeAndRoundedSizeText() throws {
+        let dir = tmp.appendingPathComponent("ws")
+        XCTAssertEqual(allocatedSize(of: dir), 0, "a workspace that is not there takes nothing")
+        try fm.createDirectory(at: dir.appendingPathComponent("gen"), withIntermediateDirectories: true)
+        try Data(count: 3_000_000).write(to: dir.appendingPathComponent("gen/all.c"))
+        try Data(count: 1_000).write(to: dir.appendingPathComponent("small"))
+        let size = allocatedSize(of: dir)
+        XCTAssertGreaterThanOrEqual(size, 3_001_000)
+        XCTAssertLessThan(size, 3_200_000)
+        XCTAssertEqual(roundedSizeText(612_000_000), "612 MB")
+    }
+
+    /// The delete control names its size once measured and says what stays.
+    func testTemporaryFilesTexts() {
+        XCTAssertEqual(TemporaryFiles.button(bytes: nil), "Delete temporary files")
+        XCTAssertEqual(TemporaryFiles.button(bytes: 612_000_000), "Delete temporary files (612 MB)")
+        XCTAssertEqual(TemporaryFiles.deleted(bytes: 612_000_000),
+                       "Temporary files deleted, 612 MB freed. NFSIV.app and your game are unchanged.")
+        XCTAssertEqual(TemporaryFiles.deleted(bytes: nil), "Temporary files deleted. NFSIV.app and your game are unchanged.")
+        XCTAssertTrue(TemporaryFiles.caption.hasPrefix("Only the Builder's own work files. NFSIV.app, your game copy, saves and settings stay"))
+        XCTAssertTrue(TemporaryFiles.caption.contains("Python and the downloads"))
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let workspace = BuilderPaths(support: home.appendingPathComponent("Library/Application Support/NFSIV Builder"),
+                                     environment: [:]).workspace(version: "1.2.3")
+        XCTAssertEqual(TemporaryFiles.deletesLine(workspace: workspace), "Deletes ~/Library/Application Support/NFSIV Builder/1.2.3")
+        for text in [TemporaryFiles.caption, TemporaryFiles.help, TemporaryFiles.deleted(bytes: 1)] {
+            XCTAssertNil(text.range(of: "[\\u2013\\u2014]", options: .regularExpression), "hyphen-minus only")
+        }
+    }
 }

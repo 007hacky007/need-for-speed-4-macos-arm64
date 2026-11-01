@@ -147,3 +147,47 @@ public func setupResult(status: Int32, events: [PipelineEvent], pythonInstalled:
     let state = buildToolsState(pythonInstalled: pythonInstalled, tools: tools)
     return state.isReady ? state : .blocked("The build tools are incomplete. Try again.")
 }
+
+/// The disk space the files under `url` take (allocated, so APFS clones and sparse files count
+/// as the space they use). 0 when it is not there.
+public func allocatedSize(of url: URL) -> Int64 {
+    let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey, .isRegularFileKey]
+    guard let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) else { return 0 }
+    var total: Int64 = 0
+    for case let file as URL in walker {
+        guard let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
+        total += Int64(values.totalFileAllocatedSize ?? 0)
+    }
+    return total
+}
+
+/// The texts of the "Delete temporary files" control after a build. It deletes only this
+/// version's workspace (`BuilderPaths.workspace`): the copied build scripts, the translated and
+/// compiled code (gen/, out/), the build's own copy of NFSIV.app (out/NFSIV.app) and whatever a
+/// build left in local/. The installed NFSIV.app, the player's game copy, saves and settings
+/// (~/Library/Application Support/NFSIV), the private Python and the shared cache with the
+/// downloads and the package environment (`BuilderPaths.cache`) are not touched.
+public enum TemporaryFiles {
+    /// `bytes` is nil until the workspace has been measured.
+    public static func button(bytes: Int64?) -> String {
+        "Delete temporary files" + (bytes.map { " (\(roundedSizeText($0)))" } ?? "")
+    }
+
+    public static let caption = "Only the Builder's own work files. NFSIV.app, your game copy, saves and settings stay, "
+        + "and so do the Builder's Python and the downloads. An update makes them again."
+
+    /// The first caption line: exactly the folder the button deletes, with ~ for the home folder
+    /// so no user name shows. `workspace` is `BuilderPaths.workspace(version:)`.
+    public static func deletesLine(workspace: URL) -> String {
+        "Deletes \((workspace.path as NSString).abbreviatingWithTildeInPath)"
+    }
+
+    /// The button's tooltip: what that folder holds.
+    public static let help = "The Builder's work folder for this version: its copy of the build scripts, "
+        + "the translated and compiled game code and the copy of NFSIV.app it made before installing it."
+
+    public static func deleted(bytes: Int64?) -> String {
+        "Temporary files deleted" + (bytes.map { ", \(roundedSizeText($0)) freed" } ?? "")
+            + ". NFSIV.app and your game are unchanged."
+    }
+}

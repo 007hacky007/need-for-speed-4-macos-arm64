@@ -1,4 +1,5 @@
 import AppKit
+import BuilderCore
 import SwiftUI
 
 struct ResultView: View {
@@ -55,11 +56,22 @@ struct ResultView: View {
             .controlSize(.large)
             Spacer()
             if model.buildFilesRemoved {
-                Text("Build files removed").font(.caption).foregroundColor(.secondary)
+                Text(TemporaryFiles.deleted(bytes: model.buildFilesBytes))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
             } else {
-                Button("Remove build files", action: model.removeBuildFiles)
-                    .controlSize(.small)
-                    .help("Frees the space used while building. Python and the downloads are kept.")
+                VStack(spacing: 4) {
+                    Button(TemporaryFiles.button(bytes: model.buildFilesBytes), action: model.removeBuildFiles)
+                        .controlSize(.small)
+                        .help(TemporaryFiles.help)
+                    Text(TemporaryFiles.deletesLine(workspace: model.paths.workspace(version: model.version))
+                         + "\n" + TemporaryFiles.caption)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .frame(maxWidth: .infinity, minHeight: 430)
