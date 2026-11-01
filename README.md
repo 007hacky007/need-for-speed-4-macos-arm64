@@ -70,7 +70,7 @@ Open NFSIV.app. The launcher appears first. Choose the renderer (Vulkan or Metal
 
 While the game is in front it takes the mouse, as it does on Windows, so the game cursor reaches every edge of the picture. In a window this starts when the pointer first moves over the picture. Press Cmd+Tab to switch to another app and get the Mac pointer back.
 
-You can move the app to another folder; the bundled engine and Vulkan runtime use relative paths. Use **Open Saves** and **Open Logs** in the launcher to find your files. If the game has a graphics problem, try Metal in the launcher to compare it with Vulkan.
+You can move the app to another folder; it carries all of its game data and the bundled engine and Vulkan runtime use relative paths. Use **Open Saves** and **Open Logs** in the launcher to find your files. If the game has a graphics problem, try Metal in the launcher to compare it with Vulkan.
 
 ## Which game copy works
 
@@ -164,7 +164,9 @@ Game patch and native dependency archives have pinned SHA-256 values in `tools/b
 
 ## Saves, logs and rebuilding
 
-Use **Open Saves** and **Open Logs** in the launcher to find your files. Saves, logs and prepared community profiles live in macOS Application Support, outside the app. Rebuilding preserves saves. A prepared community cache can be removed while the game is closed and will be recreated; retain the save profiles to keep progress.
+Use **Open Saves** and **Open Logs** in the launcher to find your files. Saves, settings and logs live in macOS Application Support (`~/Library/Application Support/NFSIV`), outside the app; each content profile has its own saves under `Profiles`. Rebuilding preserves saves.
+
+The app is self-contained: all game data, including the community content, is inside the bundle, and the game reads it from there. It needs no game folder and keeps working after you move it. A community profile runs straight from the bundle too: the engine reads the profile's files in `Contents/Resources/Addons/<profile>/Overlay` before the game's own files in `Contents/Resources/Game`, so nothing is copied or linked anywhere, and nothing is written inside the bundle while you play. Earlier versions kept a copy of the game for each community profile in `~/Library/Application Support/NFSIV/Prepared`; the launcher removes that folder once, and only that folder.
 
 Downloaded patches and private build tools use the macOS user cache by default. Each build retains a fresh prepared game and checksum metadata in ignored working directories. Earlier prepared copies can be removed when no longer needed. Generated translations and binaries are also excluded from version control.
 

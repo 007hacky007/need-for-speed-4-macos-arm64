@@ -1,8 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <CommonCrypto/CommonDigest.h>
 #include "image.h"
-#include <errno.h>
-#include <stdlib.h>
 
 static void alert(NSString *text){
  NSAlert *a=[NSAlert new];a.messageText=@"NFSIV";a.informativeText=text;[a addButtonWithTitle:@"OK"];[a runModal];
@@ -16,46 +14,28 @@ static BOOL identifier(NSString *value){
  NSCharacterSet *allowed=[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz0123456789-_"];
  return value.length<=64&&[value rangeOfCharacterFromSet:allowed.invertedSet].location==NSNotFound;
 }
-static NSURL *overlayTarget(NSURL *root,NSString *relative,NSError **error){
- NSFileManager *files=NSFileManager.defaultManager;NSURL *target=root;
- for(NSString *component in relative.pathComponents){
-  NSError *problem=nil;NSArray<NSURL *> *entries=[files contentsOfDirectoryAtURL:target includingPropertiesForKeys:nil options:0 error:&problem];
-  if(!entries&&[files fileExistsAtPath:target.path]){if(error)*error=problem;return nil;}
-  NSURL *match=nil;
-  for(NSURL *entry in entries)if([entry.lastPathComponent caseInsensitiveCompare:component]==NSOrderedSame){
-   if(match){if(error)*error=[NSError errorWithDomain:@"NFSIV" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Prepared files have ambiguous filename casing."}];return nil;}
-   match=entry;
-  }
-  target=match?:[target URLByAppendingPathComponent:component];
- }
- return target;
-}
-static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error){
- char *canonical=realpath(source.fileSystemRepresentation,NULL);
- if(!canonical){if(error)*error=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];return NO;}
- source=[NSURL fileURLWithFileSystemRepresentation:canonical isDirectory:YES relativeToURL:nil];free(canonical);
+/* Earlier versions ran a content profile from a copy of the game folder in
+ * Application Support/NFSIV/Prepared.  Every profile now runs straight from
+ * the bundle, so that copy is only wasted space: remove it (only that folder). */
+static void removeStalePrepared(NSURL *support){
+ NSURL *prepared=[support URLByAppendingPathComponent:@"Prepared" isDirectory:YES];
  NSFileManager *files=NSFileManager.defaultManager;
- if(![files createDirectoryAtURL:destination withIntermediateDirectories:YES attributes:nil error:error])return NO;
- __block NSError *walkError=nil;
- NSDirectoryEnumerator *walk=[files enumeratorAtURL:source includingPropertiesForKeys:@[NSURLIsDirectoryKey,NSURLIsRegularFileKey,NSURLIsSymbolicLinkKey] options:0 errorHandler:^BOOL(NSURL *url,NSError *problem){(void)url;walkError=problem;return NO;}];
- if(!walk){if(error)*error=[NSError errorWithDomain:@"NFSIV" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Cannot read the prepared game files."}];return NO;}
- for(NSURL *url in walk){
-  NSNumber *directory=nil,*regular=nil,*symlink=nil;
-  [url getResourceValue:&directory forKey:NSURLIsDirectoryKey error:error];
-  [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:error];
-  [url getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:error];
-  if(symlink.boolValue||(!directory.boolValue&&!regular.boolValue)){
-   if(error)*error=[NSError errorWithDomain:@"NFSIV" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Prepared game files must be regular files and directories."}];return NO;
-  }
-  NSString *relative=[url.path substringFromIndex:source.path.length+1];NSURL *target=links?[destination URLByAppendingPathComponent:relative]:overlayTarget(destination,relative,error);
-  if(!target)return NO;
-  if(directory.boolValue){if(![files createDirectoryAtURL:target withIntermediateDirectories:YES attributes:nil error:error])return NO;continue;}
-  if([files fileExistsAtPath:target.path]&&![files removeItemAtURL:target error:error])return NO;
-  if(links&&[files linkItemAtURL:url toURL:target error:nil])continue;
-  if(![files copyItemAtURL:url toURL:target error:error])return NO;
+ NSDictionary *attributes=[files attributesOfItemAtPath:prepared.path error:nil];
+ if(!attributes)return;
+ BOOL link=[attributes.fileType isEqualToString:NSFileTypeSymbolicLink];
+ NSArray *keys=@[NSURLIsRegularFileKey,NSURLTotalFileAllocatedSizeKey,NSURLFileResourceIdentifierKey];
+ NSMutableSet *seen=[NSMutableSet new];unsigned long long bytes=0,count=0;
+ for(NSURL *url in link?@[]:[files enumeratorAtURL:prepared includingPropertiesForKeys:keys options:0 errorHandler:nil]){
+  NSDictionary *values=[url resourceValuesForKeys:keys error:nil];
+  if(![values[NSURLIsRegularFileKey] boolValue])continue;
+  count++;id identity=values[NSURLFileResourceIdentifierKey];
+  if(identity&&[seen containsObject:identity])continue;
+  if(identity)[seen addObject:identity];
+  bytes+=[values[NSURLTotalFileAllocatedSizeKey] unsignedLongLongValue];
  }
- if(walkError){if(error)*error=walkError;return NO;}
- return YES;
+ NSError *error=nil;
+ if([files removeItemAtURL:prepared error:&error])fprintf(stderr,"Removed the old prepared game copies in %s: %llu files, %.1f MB allocated\n",prepared.path.fileSystemRepresentation,count,bytes/1048576.0);
+ else fprintf(stderr,"Cannot remove the old prepared game copies in %s: %s\n",prepared.path.fileSystemRepresentation,error.localizedDescription.UTF8String);
 }
 
 @interface Launcher : NSObject <NSApplicationDelegate,NSWindowDelegate>
@@ -66,10 +46,10 @@ static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error
 @property NSURL *resources,*support,*logs,*selectedSave;
 @property NSArray<NSDictionary *> *profiles;
 @property NSTask *game;
-@property NSString *buildID;
 @end
 @implementation Launcher
 - (NSURL *)url:(NSString *)path {return [self.resources URLByAppendingPathComponent:path];}
+- (NSURL *)overlay:(NSString *)profile{return [self url:[NSString stringWithFormat:@"Addons/%@/Overlay",profile]];}
 - (BOOL)validGame{
  NSData *data=[NSData dataWithContentsOfURL:[self url:@"linked.exe"] options:NSDataReadingMappedIfSafe error:nil];
  if(data.length!=IMAGE_FILE_SIZE)return NO;
@@ -84,6 +64,7 @@ static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error
  self.support=[[files URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"NFSIV" isDirectory:YES];
  self.logs=[self.support URLByAppendingPathComponent:@"Logs" isDirectory:YES];NSError *error=nil;
  if(![files createDirectoryAtURL:self.logs withIntermediateDirectories:YES attributes:nil error:&error]){alert(error.localizedDescription);[NSApp terminate:nil];return;}
+ NSURL *support=self.support;dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{removeStalePrepared(support);});
  NSData *manifest=[NSData dataWithContentsOfURL:[self url:@"Addons/catalog.json"]];
  NSDictionary *catalog=manifest?[NSJSONSerialization JSONObjectWithData:manifest options:0 error:nil]:nil;
  if(![catalog isKindOfClass:NSDictionary.class])catalog=nil;
@@ -92,14 +73,12 @@ static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error
  NSMutableSet *used=[NSMutableSet setWithObject:@"original"];BOOL invalid=NO;
  for(NSDictionary *item in items){
   if(![item isKindOfClass:NSDictionary.class]||!identifier(item[@"id"])||[used containsObject:item[@"id"]]||![item[@"name"] isKindOfClass:NSString.class]||![item[@"name"] length]){invalid=YES;break;}
-  if(![files fileExistsAtPath:[self url:[NSString stringWithFormat:@"Addons/%@/Overlay",item[@"id"]]].path]){invalid=YES;break;}
+  BOOL folder=NO;
+  if(![files fileExistsAtPath:[self overlay:item[@"id"]].path isDirectory:&folder]||!folder){invalid=YES;break;}
   [used addObject:item[@"id"]];[profiles addObject:item];
  }
- NSString *build=catalog[@"build_id"];
- NSCharacterSet *hex=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"];
- BOOL validID=[build isKindOfClass:NSString.class]&&build.length==64&&[build rangeOfCharacterFromSet:hex.invertedSet].location==NSNotFound;
- if(invalid||(profiles.count>1&&!validID)){alert(@"The community content catalog is invalid. Rebuild the app to prepare it again.");[NSApp terminate:nil];return;}
- self.profiles=profiles;self.buildID=validID?build:@IMAGE_SHA256;
+ if(invalid){alert(@"The community content catalog is invalid. Rebuild the app to prepare it again.");[NSApp terminate:nil];return;}
+ self.profiles=profiles;
  NSUserDefaults *settings=NSUserDefaults.standardUserDefaults;
  [settings registerDefaults:@{@"Resolution":@"1280x960",@"Renderer":@"vulkan",@"Fullscreen":@YES,@"Audio":@YES,@"Movies":@YES,@"SilentPatch":@YES,@"DepthFix":@YES,@"Content":@"original"}];
  self.window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,560,580) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
@@ -130,21 +109,6 @@ static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error
  [self.window center];[self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];
  if([NSProcessInfo.processInfo.arguments containsObject:@"--play"])[self play:nil];
 }
-- (NSURL *)preparedGame:(NSString *)profile error:(NSError **)error{
- if([profile isEqualToString:@"original"])return [self url:@"Game"];
- NSFileManager *files=NSFileManager.defaultManager;
- NSURL *parent=[[self.support URLByAppendingPathComponent:@"Prepared"] URLByAppendingPathComponent:self.buildID];
- NSURL *destination=[parent URLByAppendingPathComponent:profile];
- if([files fileExistsAtPath:[destination URLByAppendingPathComponent:@".complete"].path])return destination;
- if(![files createDirectoryAtURL:parent withIntermediateDirectories:YES attributes:nil error:error])return nil;
- NSURL *stage=[parent URLByAppendingPathComponent:[@".prepare-" stringByAppendingString:NSUUID.UUID.UUIDString]];
- if(!copyTree([self url:@"Game"],stage,YES,error)||!copyTree([self url:[NSString stringWithFormat:@"Addons/%@/Overlay",profile]],stage,NO,error)){
-  [files removeItemAtURL:stage error:nil];return nil;
- }
- if(![NSData.data writeToURL:[stage URLByAppendingPathComponent:@".complete"] options:NSDataWritingAtomic error:error]){[files removeItemAtURL:stage error:nil];return nil;}
- if(![files moveItemAtURL:stage toURL:destination error:error]){[files removeItemAtURL:stage error:nil];return nil;}
- return destination;
-}
 - (void)play:(id)sender{
  (void)sender;if(self.game)return;
  NSUserDefaults *settings=NSUserDefaults.standardUserDefaults;
@@ -153,9 +117,7 @@ static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error
  NSString *renderer=self.renderer.indexOfSelectedItem==1?@"metal":@"vulkan";
  [settings setObject:resolution forKey:@"Resolution"];[settings setObject:renderer forKey:@"Renderer"];[settings setObject:profile forKey:@"Content"];
  [settings setBool:self.fullscreen.state==NSControlStateValueOn forKey:@"Fullscreen"];[settings setBool:self.audio.state==NSControlStateValueOn forKey:@"Audio"];[settings setBool:self.movies.state==NSControlStateValueOn forKey:@"Movies"];[settings setBool:self.silent.state==NSControlStateValueOn forKey:@"SilentPatch"];[settings setBool:self.depth.state==NSControlStateValueOn forKey:@"DepthFix"];
- self.status.stringValue=@"Preparing game files...";[self.window displayIfNeeded];NSError *error=nil;
- NSURL *game=[self preparedGame:profile error:&error];if(!game){alert(error.localizedDescription?:@"Cannot prepare the selected content.");self.status.stringValue=@"Ready";return;}
- NSFileManager *files=NSFileManager.defaultManager;
+ NSError *error=nil;NSFileManager *files=NSFileManager.defaultManager;
  self.selectedSave=[[[self.support URLByAppendingPathComponent:@"Profiles"] URLByAppendingPathComponent:profile] URLByAppendingPathComponent:@"Saves"];
  if(![files createDirectoryAtURL:self.selectedSave withIntermediateDirectories:YES attributes:nil error:&error]){alert(error.localizedDescription);return;}
  NSString *ini=[NSString stringWithFormat:@"[NFS4]\nLanguage=english\nNoMovies=%d\nThrashDriver=dx7\nSingleProcAffinity=0\nOwnHeapLimitMb=64\nNoErrorReporting=0\nVariant=0\n",self.movies.state==NSControlStateValueOn?0:1];
@@ -165,7 +127,11 @@ static BOOL copyTree(NSURL *source,NSURL *destination,BOOL links,NSError **error
  if(![files createFileAtPath:log.path contents:nil attributes:nil]){alert(@"Cannot create the game log.");return;}
  NSFileHandle *output=[NSFileHandle fileHandleForWritingAtPath:log.path];
  NSTask *task=[NSTask new];task.executableURL=[NSBundle.mainBundle.executableURL.URLByDeletingLastPathComponent URLByAppendingPathComponent:@"NFSIVEngine"];
- task.arguments=@[[self url:@"linked.exe"].path,game.path];task.currentDirectoryURL=self.support;
+ // Every profile runs straight from the bundle: the game folder is Resources/Game and a
+ // community profile's overlay inside Resources/Addons is read first. Nothing is copied.
+ NSMutableArray *arguments=[NSMutableArray arrayWithObjects:[self url:@"linked.exe"].path,[self url:@"Game"].path,nil];
+ if(![profile isEqualToString:@"original"])[arguments addObject:[self overlay:profile].path];
+ task.arguments=arguments;task.currentDirectoryURL=self.support;
  NSMutableDictionary *environment=[NSProcessInfo.processInfo.environment mutableCopy];
  BOOL diagnostics=[NSProcessInfo.processInfo.arguments containsObject:@"--diagnostics"];
  if(!diagnostics)for(NSString *key in environment.allKeys.copy)if([key hasPrefix:@"NFSIV_"])[environment removeObjectForKey:key];

@@ -64,15 +64,14 @@ class PackageTests(unittest.TestCase):
             'build_id': 'a' * 64, 'profiles': [{'id': 'bonus', 'name': 'Bonus car'}]}))
         return game, addons, overlay
 
-    def test_cache_identity_changes_when_payload_changes_even_with_reused_catalog_id(self):
+    def test_catalog_lists_profiles_without_a_cache_identity(self):
         with tempfile.TemporaryDirectory() as t:
             game, addons, overlay = self.fixture(Path(t))
-            first = package.content_catalog(game, addons)
-            (overlay / 'asset').write_bytes(b'community fixture v2')
-            second = package.content_catalog(game, addons)
-            self.assertNotEqual(first['build_id'], second['build_id'])
-            (game / 'asset').write_bytes(b'updated base fixture')
-            self.assertNotEqual(second['build_id'], package.content_catalog(game, addons)['build_id'])
+            self.assertEqual(package.content_catalog(addons), {'profiles': [{'id': 'bonus', 'name': 'Bonus car'}]})
+            (overlay / 'asset').unlink()
+            overlay.rmdir()
+            with self.assertRaises(ValueError):
+                package.content_catalog(addons)
 
     def test_reserved_and_duplicate_profile_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as t:
@@ -82,7 +81,7 @@ class PackageTests(unittest.TestCase):
                              [{'id': '../escape', 'name': 'Wrong'}]]:
                 (addons / 'catalog.json').write_text(json.dumps({'profiles': profiles}))
                 with self.assertRaises(ValueError):
-                    package.content_catalog(game, addons)
+                    package.content_catalog(addons)
 
     def test_symlinks_are_rejected_instead_of_packaging_files_outside_the_payload(self):
         with tempfile.TemporaryDirectory() as t:
@@ -91,4 +90,4 @@ class PackageTests(unittest.TestCase):
             outside.write_bytes(b'outside fixture')
             (overlay / 'link').symlink_to(outside)
             with self.assertRaises(ValueError):
-                package.content_catalog(game, addons)
+                package.content_catalog(addons)

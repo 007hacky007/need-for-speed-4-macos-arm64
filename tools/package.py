@@ -1,6 +1,5 @@
 """Internal app packaging step. The public entry point is ./build.sh."""
 import argparse
-import hashlib
 import json
 import re
 import stat
@@ -44,8 +43,9 @@ def payload_files(folder):
     return sorted(files)
 
 
-def content_catalog(game, addons):
-    """Derive cache identity from the bytes we package, not a supplied version tag."""
+def content_catalog(addons):
+    """Validate the community profiles. Each one runs straight from the bundle:
+    the engine reads Addons/<id>/Overlay before Game, so nothing is merged or copied."""
     addons = Path(addons)
     payload_files(addons)
     catalog = json.loads((addons / 'catalog.json').read_text())
@@ -61,19 +61,12 @@ def content_catalog(game, addons):
             raise ValueError('Community content profile IDs must be unique and cannot be original')
         if not isinstance(name, str) or not name.strip():
             raise ValueError('Community content profile needs a name')
+        overlay = addons / profile / 'Overlay'
+        if overlay.is_symlink() or not overlay.is_dir():
+            raise ValueError(f'Community content profile has no overlay folder: {profile}')
         used.add(profile)
         profiles.append({'id': profile, 'name': name})
-    digest = hashlib.sha256(json.dumps(profiles, sort_keys=True, separators=(',', ':')).encode())
-    trees = [('game', Path(game))] + [('addons/' + item['id'], addons / item['id'] / 'Overlay') for item in profiles]
-    for prefix, folder in trees:
-        for relative, path in payload_files(folder):
-            digest.update((prefix + '/' + relative).encode() + b'\0')
-            file_hash = hashlib.sha256()
-            with path.open('rb') as source:
-                for block in iter(lambda: source.read(1024 * 1024), b''):
-                    file_hash.update(block)
-            digest.update(file_hash.digest())
-    return {'build_id': digest.hexdigest(), 'profiles': profiles}
+    return {'profiles': profiles}
 
 
 def package_app(game_folder, addons=None, output=None, moltenvk=None):
@@ -107,7 +100,7 @@ def package_app(game_folder, addons=None, output=None, moltenvk=None):
         (driver / 'thrash.ini').write_text('[THRASH]\nFile=dx7a.dll\nType=d3d\nFogSupport=1\nDirectDrawLagFix=1\n')
         (destination / 'nfs4.ini').write_text('[NFS4]\nLanguage=english\nNoMovies=0\nThrashDriver=dx7\nSingleProcAffinity=0\nOwnHeapLimitMb=64\nNoErrorReporting=0\nVariant=0\n')
         if addons:
-            catalog = content_catalog(destination, addons)
+            catalog = content_catalog(addons)
             shutil.copytree(addons, resources / 'Addons', ignore=shutil.ignore_patterns('.DS_Store', '._*'))
             (resources / 'Addons/catalog.json').write_text(json.dumps(catalog, indent=2) + '\n')
         runtime = moltenvk / 'dynamic/dylib/macOS/libMoltenVK.dylib'
